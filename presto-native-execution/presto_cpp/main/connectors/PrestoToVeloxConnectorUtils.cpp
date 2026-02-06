@@ -78,6 +78,30 @@ std::string toString(
   return value.value<std::string>();
 }
 
+bool isDecimalDomain(
+    const protocol::Domain& domain,
+    const TypeParser& typeParser) {
+  auto checkTypeString = [&](const std::string& typeString) {
+    auto type = stringToType(typeString, typeParser);
+    return type->isDecimal();
+  };
+  if (auto sortedRangeSet =
+          std::dynamic_pointer_cast<protocol::SortedRangeSet>(domain.values)) {
+    return checkTypeString(sortedRangeSet->type);
+  }
+  if (auto equatableValueSet =
+          std::dynamic_pointer_cast<protocol::EquatableValueSet>(
+              domain.values)) {
+    return checkTypeString(equatableValueSet->type);
+  }
+  if (auto allOrNoneValueSet =
+          std::dynamic_pointer_cast<protocol::AllOrNoneValueSet>(
+              domain.values)) {
+    return checkTypeString(allOrNoneValueSet->type);
+  }
+  return false;
+}
+
 bool toBoolean(
     const std::shared_ptr<protocol::Block>& block,
     const VeloxExprConverter& exprConverter,
@@ -758,7 +782,9 @@ std::unique_ptr<velox::connector::ConnectorTableHandle> toHiveTableHandle(
   common::SubfieldFilters subfieldFilters;
   auto domains = domainPredicate.domains;
   for (const auto& domain : *domains) {
-    auto filter = domain.second;
+    if (isDecimalDomain(domain.second, typeParser)) {
+      continue;
+    }
     subfieldFilters[common::Subfield(domain.first)] =
         toFilter(domain.second, exprConverter, typeParser);
   }
