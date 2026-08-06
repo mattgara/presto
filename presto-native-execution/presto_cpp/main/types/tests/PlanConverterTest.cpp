@@ -159,6 +159,60 @@ TEST_F(PlanConverterTest, finalAgg) {
   assertToVeloxQueryPlan("FinalAgg.json");
 }
 
+TEST_F(PlanConverterTest, outputTransportAbsentDefaultsToInMemory) {
+  std::string fragment = slurp(test::utils::getDataPath("FinalAgg.json"));
+  json j = json::parse(fragment);
+  ASSERT_FALSE(j.count("outputTransportType"));
+
+  protocol::PlanFragment prestoPlan = j;
+  auto pool = memory::deprecatedAddDefaultLeafMemoryPool();
+  auto queryCtx = core::QueryCtx::create();
+  VeloxInteractiveQueryPlanConverter converter(queryCtx.get(), pool.get());
+  const auto veloxFragment = converter.toVeloxQueryPlan(
+      prestoPlan, nullptr, "20201107_130540_00011_wrpkw.1.2.3");
+
+  auto* partitionedOutput = dynamic_cast<const core::PartitionedOutputNode*>(
+      veloxFragment.planNode.get());
+  ASSERT_NE(partitionedOutput, nullptr);
+  EXPECT_EQ(partitionedOutput->transportKind(), core::TransportKind::kInMemory);
+}
+
+TEST_F(PlanConverterTest, outputTransportAnySelectsUcx) {
+  std::string fragment = slurp(test::utils::getDataPath("FinalAgg.json"));
+  json j = json::parse(fragment);
+  j["outputTransportType"] = "ANY";
+
+  protocol::PlanFragment prestoPlan = j;
+  auto pool = memory::deprecatedAddDefaultLeafMemoryPool();
+  auto queryCtx = core::QueryCtx::create();
+  VeloxInteractiveQueryPlanConverter converter(queryCtx.get(), pool.get());
+  const auto veloxFragment = converter.toVeloxQueryPlan(
+      prestoPlan, nullptr, "20201107_130540_00011_wrpkw.1.2.3");
+
+  auto* partitionedOutput = dynamic_cast<const core::PartitionedOutputNode*>(
+      veloxFragment.planNode.get());
+  ASSERT_NE(partitionedOutput, nullptr);
+  EXPECT_EQ(partitionedOutput->transportKind(), core::TransportKind::kUcx);
+}
+
+TEST_F(PlanConverterTest, outputTransportHttpSelectsInMemory) {
+  std::string fragment = slurp(test::utils::getDataPath("FinalAgg.json"));
+  json j = json::parse(fragment);
+  j["outputTransportType"] = "HTTP";
+
+  protocol::PlanFragment prestoPlan = j;
+  auto pool = memory::deprecatedAddDefaultLeafMemoryPool();
+  auto queryCtx = core::QueryCtx::create();
+  VeloxInteractiveQueryPlanConverter converter(queryCtx.get(), pool.get());
+  const auto veloxFragment = converter.toVeloxQueryPlan(
+      prestoPlan, nullptr, "20201107_130540_00011_wrpkw.1.2.3");
+
+  auto* partitionedOutput = dynamic_cast<const core::PartitionedOutputNode*>(
+      veloxFragment.planNode.get());
+  ASSERT_NE(partitionedOutput, nullptr);
+  EXPECT_EQ(partitionedOutput->transportKind(), core::TransportKind::kInMemory);
+}
+
 // Last stage (output) plan for select regionkey, sum(1) from nation group by 1
 TEST_F(PlanConverterTest, output) {
   assertToVeloxQueryPlan("Output.json");
