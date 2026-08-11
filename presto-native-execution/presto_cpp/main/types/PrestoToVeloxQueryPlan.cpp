@@ -2514,16 +2514,28 @@ core::PlanNodePtr VeloxQueryPlanConverterBase::toVeloxQueryPlan(
   outputTypes.push_back(resultType);
   auto outputType = ROW(std::move(outputNames), std::move(outputTypes));
 
+  // Velox's current RPCNode represents the call as a typed expression rather
+  // than as parallel legacy argument vectors.
+  std::vector<core::TypedExprPtr> callInputs;
+  callInputs.reserve(argumentColumns.size());
+  for (size_t i = 0; i < argumentColumns.size(); ++i) {
+    if (constantInputs[i]) {
+      callInputs.push_back(
+          std::make_shared<core::ConstantTypedExpr>(constantInputs[i]));
+    } else {
+      callInputs.push_back(std::make_shared<core::FieldAccessTypedExpr>(
+          argumentTypes[i], argumentColumns[i]));
+    }
+  }
+  auto call = std::make_shared<core::CallTypedExpr>(
+      resultType, std::move(callInputs), node->functionName);
+
   return std::make_shared<core::RPCNode>(
       node->id,
       sourceNode,
-      node->functionName,
-      resultType,
+      std::move(call),
       node->outputVariable.name,
       std::move(outputType),
-      std::move(argumentColumns),
-      std::move(argumentTypes),
-      std::move(constantInputs),
       veloxStreamingMode,
       dispatchBatchSize);
 }
@@ -2770,8 +2782,8 @@ core::PlanFragment VeloxQueryPlanConverterBase::toVeloxQueryPlan(
   auto outputType = toRowType(partitioningScheme.outputLayout, typeParser_);
   const auto partitionedOutputNodeId =
       toPartitionedOutputNodeId(fragment.root->id);
-  planFragment.outputTransportTypes[partitionedOutputNodeId] =
-      toVeloxTransportType(fragment.outputTransportType);
+  const std::string outputTransportKind{
+      toVeloxTransportType(fragment.outputTransportType)};
 
   if (auto systemPartitioningHandle =
           std::dynamic_pointer_cast<protocol::SystemPartitioningHandle>(
@@ -2787,6 +2799,7 @@ core::PlanFragment VeloxQueryPlanConverterBase::toVeloxQueryPlan(
             partitionedOutputNodeId,
             outputType,
             toVeloxSerdeKind(partitioningScheme.encoding),
+            outputTransportKind,
             sourceNode);
         return planFragment;
       case protocol::SystemPartitioning::FIXED: {
@@ -2801,6 +2814,7 @@ core::PlanFragment VeloxQueryPlanConverterBase::toVeloxQueryPlan(
                   partitionedOutputNodeId,
                   outputType,
                   toVeloxSerdeKind(partitioningScheme.encoding),
+                  outputTransportKind,
                   sourceNode);
               return planFragment;
             }
@@ -2814,6 +2828,7 @@ core::PlanFragment VeloxQueryPlanConverterBase::toVeloxQueryPlan(
                     std::make_shared<RoundRobinPartitionFunctionSpec>(),
                     outputType,
                     toVeloxSerdeKind(partitioningScheme.encoding),
+                    outputTransportKind,
                     sourceNode);
             return planFragment;
           }
@@ -2827,6 +2842,7 @@ core::PlanFragment VeloxQueryPlanConverterBase::toVeloxQueryPlan(
                   partitionedOutputNodeId,
                   outputType,
                   toVeloxSerdeKind(partitioningScheme.encoding),
+                  outputTransportKind,
                   sourceNode);
               return planFragment;
             }
@@ -2841,6 +2857,7 @@ core::PlanFragment VeloxQueryPlanConverterBase::toVeloxQueryPlan(
                         inputType, keyChannels, constValues),
                     outputType,
                     toVeloxSerdeKind(partitioningScheme.encoding),
+                    outputTransportKind,
                     sourceNode);
             return planFragment;
           }
@@ -2850,6 +2867,7 @@ core::PlanFragment VeloxQueryPlanConverterBase::toVeloxQueryPlan(
                 1,
                 outputType,
                 toVeloxSerdeKind(partitioningScheme.encoding),
+                outputTransportKind,
                 sourceNode);
             return planFragment;
           }
@@ -2869,6 +2887,7 @@ core::PlanFragment VeloxQueryPlanConverterBase::toVeloxQueryPlan(
             partitionedOutputNodeId,
             std::move(outputType),
             toVeloxSerdeKind(partitioningScheme.encoding),
+            outputTransportKind,
             std::move(sourceNode));
         return planFragment;
       }
@@ -2888,6 +2907,7 @@ core::PlanFragment VeloxQueryPlanConverterBase::toVeloxQueryPlan(
         partitionedOutputNodeId,
         outputType,
         toVeloxSerdeKind(partitioningScheme.encoding),
+        outputTransportKind,
         sourceNode);
     return planFragment;
   }
@@ -2904,6 +2924,7 @@ core::PlanFragment VeloxQueryPlanConverterBase::toVeloxQueryPlan(
       std::shared_ptr(std::move(spec)),
       toRowType(partitioningScheme.outputLayout, typeParser_),
       toVeloxSerdeKind(partitioningScheme.encoding),
+      outputTransportKind,
       sourceNode);
   return planFragment;
 }
@@ -2923,8 +2944,6 @@ core::PlanNodePtr VeloxInteractiveQueryPlanConverter::toVeloxQueryPlan(
     const std::shared_ptr<const protocol::RemoteSourceNode>& node,
     const std::shared_ptr<protocol::TableWriteInfo>& /*tableWriteInfo*/,
     const protocol::TaskId& taskId) {
-  planFragment_->inputTransportTypes[node->id] =
-      toVeloxTransportType(node->transportType);
   auto rowType = toRowType(node->outputVariables, typeParser_);
   if (node->orderingScheme) {
     std::vector<core::FieldAccessTypedExprPtr> sortingKeys;
@@ -2988,6 +3007,7 @@ core::PlanFragment VeloxBatchQueryPlanConverter::toVeloxQueryPlan(
         1,
         broadcastWriteNode->outputType(),
         "Presto",
+        partitionedOutputNode->transportKind(),
         {broadcastWriteNode});
     return planFragment;
   }
@@ -3082,8 +3102,6 @@ core::PlanNodePtr VeloxBatchQueryPlanConverter::toVeloxQueryPlan(
     const std::shared_ptr<const protocol::RemoteSourceNode>& node,
     const std::shared_ptr<protocol::TableWriteInfo>& /* tableWriteInfo */,
     const protocol::TaskId& taskId) {
-  planFragment_->inputTransportTypes[node->id] =
-      toVeloxTransportType(node->transportType);
   auto rowType = toRowType(node->outputVariables, typeParser_);
   // Broadcast exchange source.
   if (node->exchangeType == protocol::ExchangeNodeType::REPLICATE) {
