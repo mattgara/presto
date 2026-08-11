@@ -102,6 +102,8 @@ public final class SystemSessionProperties
     public static final String OPTIMIZE_HASH_GENERATION = "optimize_hash_generation";
     public static final String JOIN_DISTRIBUTION_TYPE = "join_distribution_type";
     public static final String JOIN_MAX_BROADCAST_TABLE_SIZE = "join_max_broadcast_table_size";
+    public static final String RECONSIDER_LOW_CONFIDENCE_FILTER_BROADCAST = "reconsider_low_confidence_filter_broadcast";
+    public static final String LOW_CONFIDENCE_FILTER_BROADCAST_SCALE_FACTOR = "low_confidence_filter_broadcast_scale_factor";
     public static final String RETRY_QUERY_WITH_HISTORY_BASED_OPTIMIZATION = "retry_query_with_history_based_optimization";
     public static final String SIZE_BASED_JOIN_DISTRIBUTION_TYPE = "size_based_join_distribution_type";
     public static final String DISTRIBUTED_JOIN = "distributed_join";
@@ -509,6 +511,20 @@ public final class SystemSessionProperties
                         true,
                         value -> DataSize.valueOf((String) value),
                         DataSize::toString),
+                booleanProperty(
+                        RECONSIDER_LOW_CONFIDENCE_FILTER_BROADCAST,
+                        "Reconsider replicated distribution after join reordering when a low-confidence filtered build may be overestimated",
+                        featuresConfig.isReconsiderLowConfidenceFilterBroadcastEnabled(),
+                        false),
+                new PropertyMetadata<>(
+                        LOW_CONFIDENCE_FILTER_BROADCAST_SCALE_FACTOR,
+                        "Alternate scale factor used to cost low-confidence filtered build sides when reconsidering replicated distribution",
+                        DOUBLE,
+                        Double.class,
+                        featuresConfig.getLowConfidenceFilterBroadcastScaleFactor(),
+                        false,
+                        value -> validatePositiveDoubleValueWithinOne(value, LOW_CONFIDENCE_FILTER_BROADCAST_SCALE_FACTOR),
+                        object -> object),
                 booleanProperty(
                         SIZE_BASED_JOIN_DISTRIBUTION_TYPE,
                         "Consider source table size when determining join distribution type when CBO fails",
@@ -2553,6 +2569,16 @@ public final class SystemSessionProperties
         return session.getSystemProperty(JOIN_MAX_BROADCAST_TABLE_SIZE, DataSize.class);
     }
 
+    public static boolean isReconsiderLowConfidenceFilterBroadcastEnabled(Session session)
+    {
+        return session.getSystemProperty(RECONSIDER_LOW_CONFIDENCE_FILTER_BROADCAST, Boolean.class);
+    }
+
+    public static double getLowConfidenceFilterBroadcastScaleFactor(Session session)
+    {
+        return session.getSystemProperty(LOW_CONFIDENCE_FILTER_BROADCAST_SCALE_FACTOR, Double.class);
+    }
+
     public static boolean isSizeBasedJoinDistributionTypeEnabled(Session session)
     {
         return session.getSystemProperty(SIZE_BASED_JOIN_DISTRIBUTION_TYPE, Boolean.class);
@@ -3199,6 +3225,21 @@ public final class SystemSessionProperties
             throw new PrestoException(
                     INVALID_SESSION_PROPERTY,
                     format("%s must be within the range of 0 and 1.0: %s", property, doubleValue));
+        }
+        return doubleValue;
+    }
+
+    private static Double validatePositiveDoubleValueWithinOne(Object value, String property)
+    {
+        Double number = (Double) value;
+        if (number == null) {
+            return null;
+        }
+        double doubleValue = number.doubleValue();
+        if (doubleValue <= 0 || doubleValue > 1) {
+            throw new PrestoException(
+                    INVALID_SESSION_PROPERTY,
+                    format("%s must be greater than 0 and less than or equal to 1.0: %s", property, doubleValue));
         }
         return doubleValue;
     }

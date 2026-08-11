@@ -37,6 +37,7 @@ import static com.facebook.presto.hive.metastore.MetastoreUtil.USER_DEFINED_TYPE
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_SESSION_PROPERTY;
 import static com.facebook.presto.spi.session.PropertyMetadata.booleanProperty;
 import static com.facebook.presto.spi.session.PropertyMetadata.integerProperty;
+import static com.facebook.presto.spi.session.PropertyMetadata.longProperty;
 import static com.facebook.presto.spi.session.PropertyMetadata.stringProperty;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
@@ -93,6 +94,7 @@ public final class HiveSessionProperties
     private static final String USE_PAGEFILE_FOR_HIVE_UNSUPPORTED_TYPE = "use_pagefile_for_hive_unsupported_type";
     public static final String PUSHDOWN_FILTER_ENABLED = "pushdown_filter_enabled";
     public static final String PARQUET_PUSHDOWN_FILTER_ENABLED = "parquet_pushdown_filter_enabled";
+    public static final String PUSHDOWN_FILTER_MIN_TABLE_ROWS = "pushdown_filter_min_table_rows";
     public static final String ADAPTIVE_FILTER_REORDERING_ENABLED = "adaptive_filter_reordering_enabled";
     public static final String VIRTUAL_BUCKET_COUNT = "virtual_bucket_count";
     public static final String CTE_VIRTUAL_BUCKET_COUNT = "cte_virtual_bucket_count";
@@ -397,6 +399,11 @@ public final class HiveSessionProperties
                         PARQUET_PUSHDOWN_FILTER_ENABLED,
                         "Experimental: enable complex filter pushdown for Parquet",
                         hiveClientConfig.isParquetPushdownFilterEnabled(),
+                        false),
+                longProperty(
+                        PUSHDOWN_FILTER_MIN_TABLE_ROWS,
+                        "Experimental: only enable complex filter pushdown for tables with at least this many analyzed rows; zero disables the threshold",
+                        hiveClientConfig.getPushdownFilterMinTableRows(),
                         false),
                 booleanProperty(
                         ADAPTIVE_FILTER_REORDERING_ENABLED,
@@ -933,6 +940,11 @@ public final class HiveSessionProperties
     public static boolean isParquetPushdownFilterEnabled(ConnectorSession session)
     {
         return session.getProperty(PARQUET_PUSHDOWN_FILTER_ENABLED, Boolean.class);
+    }
+
+    public static long getPushdownFilterMinTableRows(ConnectorSession session)
+    {
+        return session.getProperty(PUSHDOWN_FILTER_MIN_TABLE_ROWS, Long.class);
     }
 
     public static boolean isAdaptiveFilterReorderingEnabled(ConnectorSession session)

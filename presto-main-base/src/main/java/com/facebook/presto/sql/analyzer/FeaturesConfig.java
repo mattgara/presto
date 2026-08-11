@@ -86,6 +86,8 @@ public class FeaturesConfig
     private boolean distributedIndexJoinsEnabled;
     private JoinDistributionType joinDistributionType = JoinDistributionType.AUTOMATIC;
     private DataSize joinMaxBroadcastTableSize = new DataSize(100, MEGABYTE);
+    private boolean reconsiderLowConfidenceFilterBroadcast;
+    private double lowConfidenceFilterBroadcastScaleFactor = 1.0;
     private boolean sizeBasedJoinDistributionTypeEnabled = true;
     private boolean colocatedJoinsEnabled = true;
     private boolean groupedExecutionEnabled = true;
@@ -681,6 +683,34 @@ public class FeaturesConfig
     public FeaturesConfig setJoinMaxBroadcastTableSize(DataSize joinMaxBroadcastTableSize)
     {
         this.joinMaxBroadcastTableSize = joinMaxBroadcastTableSize;
+        return this;
+    }
+
+    public boolean isReconsiderLowConfidenceFilterBroadcastEnabled()
+    {
+        return reconsiderLowConfidenceFilterBroadcast;
+    }
+
+    @Config("optimizer.reconsider-low-confidence-filter-broadcast")
+    @ConfigDescription("Reconsider replicated distribution after join reordering when a low-confidence filtered build may be overestimated")
+    public FeaturesConfig setReconsiderLowConfidenceFilterBroadcastEnabled(boolean reconsiderLowConfidenceFilterBroadcast)
+    {
+        this.reconsiderLowConfidenceFilterBroadcast = reconsiderLowConfidenceFilterBroadcast;
+        return this;
+    }
+
+    @DecimalMin(value = "0.0", inclusive = false)
+    @DecimalMax("1.0")
+    public double getLowConfidenceFilterBroadcastScaleFactor()
+    {
+        return lowConfidenceFilterBroadcastScaleFactor;
+    }
+
+    @Config("optimizer.low-confidence-filter-broadcast-scale-factor")
+    @ConfigDescription("Alternate scale factor used to cost low-confidence filtered build sides when reconsidering replicated distribution")
+    public FeaturesConfig setLowConfidenceFilterBroadcastScaleFactor(double lowConfidenceFilterBroadcastScaleFactor)
+    {
+        this.lowConfidenceFilterBroadcastScaleFactor = lowConfidenceFilterBroadcastScaleFactor;
         return this;
     }
 

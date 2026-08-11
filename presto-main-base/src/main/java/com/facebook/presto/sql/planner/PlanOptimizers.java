@@ -121,11 +121,13 @@ import com.facebook.presto.sql.planner.iterative.rule.PushProjectionThroughExcha
 import com.facebook.presto.sql.planner.iterative.rule.PushProjectionThroughUnion;
 import com.facebook.presto.sql.planner.iterative.rule.PushRemoteExchangeThroughAssignUniqueId;
 import com.facebook.presto.sql.planner.iterative.rule.PushRemoteExchangeThroughGroupId;
+import com.facebook.presto.sql.planner.iterative.rule.PushSelectiveJoinBelowAggregation;
 import com.facebook.presto.sql.planner.iterative.rule.PushSemiJoinThroughUnion;
 import com.facebook.presto.sql.planner.iterative.rule.PushTableWriteThroughUnion;
 import com.facebook.presto.sql.planner.iterative.rule.PushTopNThroughUnion;
 import com.facebook.presto.sql.planner.iterative.rule.PushdownThroughUnnest;
 import com.facebook.presto.sql.planner.iterative.rule.RandomizeSourceKeyInSemiJoin;
+import com.facebook.presto.sql.planner.iterative.rule.ReconsiderLowConfidenceFilterBroadcast;
 import com.facebook.presto.sql.planner.iterative.rule.RemoveCrossJoinWithConstantInput;
 import com.facebook.presto.sql.planner.iterative.rule.RemoveEmptyDelete;
 import com.facebook.presto.sql.planner.iterative.rule.RemoveFullSample;
@@ -173,9 +175,11 @@ import com.facebook.presto.sql.planner.iterative.rule.TransformCorrelatedLateral
 import com.facebook.presto.sql.planner.iterative.rule.TransformCorrelatedScalarAggregationToJoin;
 import com.facebook.presto.sql.planner.iterative.rule.TransformCorrelatedScalarSubquery;
 import com.facebook.presto.sql.planner.iterative.rule.TransformCorrelatedSingleRowSubqueryToProject;
+import com.facebook.presto.sql.planner.iterative.rule.TransformCountFilteredLeftJoinToInnerJoin;
 import com.facebook.presto.sql.planner.iterative.rule.TransformDistinctInnerJoinToLeftEarlyOutJoin;
 import com.facebook.presto.sql.planner.iterative.rule.TransformDistinctInnerJoinToRightEarlyOutJoin;
 import com.facebook.presto.sql.planner.iterative.rule.TransformExistsApplyToLateralNode;
+import com.facebook.presto.sql.planner.iterative.rule.TransformPairedExistsApplyToLateralNode;
 import com.facebook.presto.sql.planner.iterative.rule.TransformTableFunctionProcessorToTableScan;
 import com.facebook.presto.sql.planner.iterative.rule.TransformTableFunctionToTableFunctionProcessor;
 import com.facebook.presto.sql.planner.iterative.rule.TransformUncorrelatedInPredicateSubqueryToDistinctInnerJoin;
@@ -616,6 +620,12 @@ public class PlanOptimizers
                         ruleStats,
                         statsCalculator,
                         estimatedExchangesCostCalculator,
+                        ImmutableSet.of(new TransformPairedExistsApplyToLateralNode(metadata.getFunctionAndTypeManager()))),
+                new IterativeOptimizer(
+                        metadata,
+                        ruleStats,
+                        statsCalculator,
+                        estimatedExchangesCostCalculator,
                         ImmutableSet.of(new TransformExistsApplyToLateralNode(metadata.getFunctionAndTypeManager()))),
                 new TransformQuantifiedComparisonApplyToLateralJoin(metadata.getFunctionAndTypeManager()),
                 new IterativeOptimizer(
@@ -986,6 +996,18 @@ public class PlanOptimizers
                         new CreatePartialTopN(),
                         new PushTopNThroughUnion())));
 
+        // Count-based HAVING filters and selective aggregation joins are exposed only after the late
+        // predicate/projection passes above. Rewrite them before statistics marking and the single
+        // join-reordering pass.
+        builder.add(new IterativeOptimizer(
+                metadata,
+                ruleStats,
+                statsCalculator,
+                estimatedExchangesCostCalculator,
+                ImmutableSet.of(
+                        new PushSelectiveJoinBelowAggregation(),
+                        new TransformCountFilteredLeftJoinToInnerJoin(metadata.getFunctionAndTypeManager()))));
+
         // We do a single pass, and assign `statsEquivalentPlanNode` to each node.
         // After this step, nodes with same `statsEquivalentPlanNode` will share same history based statistics.
         builder.add(new StatsRecordingPlanOptimizer(optimizerStats, new HistoricalStatisticsEquivalentPlanMarkingOptimizer(statsCalculator)));
@@ -1008,6 +1030,13 @@ public class PlanOptimizers
                 estimatedExchangesCostCalculator,
                 ImmutableSet.of(new ReorderJoins(costComparator, metadata))));
 
+        builder.add(new IterativeOptimizer(
+                metadata,
+                ruleStats,
+                statsCalculator,
+                estimatedExchangesCostCalculator,
+                ImmutableSet.of(new ReconsiderLowConfidenceFilterBroadcast(costComparator, taskCountEstimator))));
+
         // After ReorderJoins, `statsEquivalentPlanNode` will be unassigned to intermediate join nodes.
         // We run it again to mark this for intermediate join nodes.
         builder.add(new StatsRecordingPlanOptimizer(optimizerStats, new HistoricalStatisticsEquivalentPlanMarkingOptimizer(statsCalculator)));
@@ -1020,6 +1049,9 @@ public class PlanOptimizers
                 estimatedExchangesCostCalculator,
                 Optional.of(new LogicalPropertiesProviderImpl(new FunctionResolution(metadata.getFunctionAndTypeManager().getFunctionAndTypeResolver()))),
                 ImmutableSet.of(
+                        // ReorderJoins can make a selective dimension join directly adjacent to
+                        // an aggregate even when it was not adjacent in the original join tree.
+                        new PushSelectiveJoinBelowAggregation(),
                         new TransformDistinctInnerJoinToLeftEarlyOutJoin(),
                         new TransformDistinctInnerJoinToRightEarlyOutJoin(),
                         new RemoveRedundantDistinct(),

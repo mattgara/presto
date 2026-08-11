@@ -159,6 +159,7 @@ public class HiveClientConfig
 
     private boolean pushdownFilterEnabled;
     private boolean parquetPushdownFilterEnabled;
+    private long pushdownFilterMinTableRows;
     private boolean adaptiveFilterReorderingEnabled = true;
     private Duration fileStatusCacheExpireAfterWrite = new Duration(0, TimeUnit.SECONDS);
     private DataSize fileStatusCacheMaxRetainedSize = new DataSize(0, KILOBYTE);
@@ -1315,6 +1316,20 @@ public class HiveClientConfig
     public HiveClientConfig setParquetPushdownFilterEnabled(boolean parquetPushdownFilterEnabled)
     {
         this.parquetPushdownFilterEnabled = parquetPushdownFilterEnabled;
+        return this;
+    }
+
+    @Min(0)
+    public long getPushdownFilterMinTableRows()
+    {
+        return pushdownFilterMinTableRows;
+    }
+
+    @Config("hive.pushdown-filter-min-table-rows")
+    @ConfigDescription("Experimental: only enable complex filter pushdown for tables with at least this many analyzed rows; zero disables the threshold")
+    public HiveClientConfig setPushdownFilterMinTableRows(long pushdownFilterMinTableRows)
+    {
+        this.pushdownFilterMinTableRows = pushdownFilterMinTableRows;
         return this;
     }
 

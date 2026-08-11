@@ -15,6 +15,7 @@ package com.facebook.presto.hive.rule;
 
 import com.facebook.presto.common.Subfield;
 import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.hive.HiveBucketHandle;
 import com.facebook.presto.hive.HiveBucketing;
 import com.facebook.presto.hive.HiveColumnHandle;
@@ -25,6 +26,7 @@ import com.facebook.presto.hive.HiveStorageFormat;
 import com.facebook.presto.hive.HiveTableHandle;
 import com.facebook.presto.hive.HiveTableLayoutHandle;
 import com.facebook.presto.hive.HiveTransactionManager;
+import com.facebook.presto.hive.SubfieldExtractor;
 import com.facebook.presto.hive.metastore.Column;
 import com.facebook.presto.hive.metastore.MetastoreContext;
 import com.facebook.presto.hive.metastore.SemiTransactionalHiveMetastore;
@@ -48,6 +50,7 @@ import com.facebook.presto.spi.relation.DomainTranslator;
 import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.spi.relation.RowExpressionService;
 import com.google.common.base.Functions;
+import com.google.common.collect.ImmutableMap;
 
 import java.util.List;
 import java.util.Map;
@@ -56,14 +59,18 @@ import java.util.Set;
 import java.util.function.Function;
 
 import static com.facebook.presto.expressions.LogicalRowExpressions.TRUE_CONSTANT;
+import static com.facebook.presto.expressions.LogicalRowExpressions.and;
+import static com.facebook.presto.hive.HiveSessionProperties.getPushdownFilterMinTableRows;
 import static com.facebook.presto.hive.HiveSessionProperties.isParquetPushdownFilterEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isPushdownFilterEnabled;
 import static com.facebook.presto.hive.HiveTableProperties.getHiveStorageFormat;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.getHiveBasicStatistics;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.getMetastoreHeaders;
 import static com.facebook.presto.hive.metastore.MetastoreUtil.isUserDefinedTypeEncodingEnabled;
 import static com.facebook.presto.hive.rule.FilterPushdownUtils.getDomainPredicate;
 import static com.facebook.presto.hive.rule.FilterPushdownUtils.getPredicateColumnNames;
 import static com.facebook.presto.spi.ConnectorPlanRewriter.rewriteWith;
+import static com.facebook.presto.spi.relation.ExpressionOptimizer.Level.OPTIMIZED;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -111,6 +118,8 @@ public class HiveFilterPushdown
             extends BaseSubfieldExtractionRewriter
     {
         private final HivePartitionManager partitionManager;
+        private final StandardFunctionResolution functionResolution;
+
         public SubfieldExtractionRewriter(
                 ConnectorSession session,
                 PlanNodeIdAllocator idAllocator,
@@ -124,6 +133,7 @@ public class HiveFilterPushdown
             super(session, idAllocator, rowExpressionService, functionResolution, functionMetadataManager, transactionToMetadata);
 
             this.partitionManager = requireNonNull(partitionManager, "partitionManager is null");
+            this.functionResolution = requireNonNull(functionResolution, "functionResolution is null");
         }
 
         @Override
@@ -169,14 +179,47 @@ public class HiveFilterPushdown
             Table table = metastore.getTable(context, hiveTableHandle)
                     .orElseThrow(() -> new TableNotFoundException(tableName));
 
+            long minTableRows = getPushdownFilterMinTableRows(session);
+            RowExpression optimizedReaderRemainingExpression = rowExpressionService.getExpressionOptimizer(session)
+                    .optimize(remainingExpressions.getRemainingExpression(), OPTIMIZED, session);
+            boolean selectiveReaderFilter = hasSelectiveDomainPredicate(domainPredicate) ||
+                    !TRUE_CONSTANT.equals(optimizedReaderRemainingExpression);
+            boolean deferFilter = minTableRows > 0 &&
+                    (getHiveBasicStatistics(table.getParameters()).getRowCount().orElse(0) < minTableRows ||
+                            !selectiveReaderFilter);
+
+            TupleDomain<Subfield> readerDomainPredicate = deferFilter ? TupleDomain.all() : domainPredicate;
+            RowExpression readerRemainingExpression = deferFilter ? TRUE_CONSTANT : remainingExpressions.getRemainingExpression();
+            Map<String, HiveColumnHandle> readerPredicateColumns = deferFilter ? ImmutableMap.of() : predicateColumns;
+            RowExpression unenforcedFilter = remainingExpressions.getDynamicFilterExpression();
+            if (deferFilter) {
+                Map<String, Type> columnTypes = columnHandles.entrySet().stream()
+                        .collect(toImmutableMap(
+                                Map.Entry::getKey,
+                                entry -> metadata.getColumnMetadata(session, tableHandle, entry.getValue()).getType()));
+                SubfieldExtractor subfieldExtractor = new SubfieldExtractor(
+                        functionResolution,
+                        rowExpressionService.getExpressionOptimizer(session),
+                        session);
+                RowExpression domainExpression = rowExpressionService.getDomainTranslator().toPredicate(
+                        domainPredicate.transform(subfield -> subfieldExtractor.toRowExpression(
+                                subfield,
+                                columnTypes.get(subfield.getRootName()))));
+                unenforcedFilter = andFilters(
+                        domainExpression,
+                        andFilters(
+                                remainingExpressions.getRemainingExpression(),
+                                remainingExpressions.getDynamicFilterExpression()));
+            }
+
             String layoutString = createTableLayoutString(
                     session,
                     rowExpressionService,
                     tableName,
                     hivePartitionResult.getBucketHandle(),
                     hivePartitionResult.getBucketFilter(),
-                    remainingExpressions.getRemainingExpression(),
-                    domainPredicate);
+                    readerRemainingExpression,
+                    readerDomainPredicate);
 
             Optional<Set<HiveColumnHandle>> requestedColumns = currentLayoutHandle.map(layout -> ((HiveTableLayoutHandle) layout).getRequestedColumns()).orElse(Optional.empty());
 
@@ -191,21 +234,21 @@ public class HiveFilterPushdown
                                     .setPartitionColumns(hivePartitionResult.getPartitionColumns())
                                     .setDataColumns(pruneColumnComments(hivePartitionResult.getDataColumns()))
                                     .setTableParameters(hivePartitionResult.getTableParameters())
-                                    .setDomainPredicate(domainPredicate)
-                                    .setRemainingPredicate(remainingExpressions.getRemainingExpression())
-                                    .setPredicateColumns(predicateColumns)
+                                    .setDomainPredicate(readerDomainPredicate)
+                                    .setRemainingPredicate(readerRemainingExpression)
+                                    .setPredicateColumns(readerPredicateColumns)
                                     .setPartitionColumnPredicate(hivePartitionResult.getEnforcedConstraint())
                                     .setPartitions(hivePartitionResult.getPartitions())
                                     .setBucketHandle(hivePartitionResult.getBucketHandle())
                                     .setBucketFilter(hivePartitionResult.getBucketFilter())
-                                    .setPushdownFilterEnabled(true)
+                                    .setPushdownFilterEnabled(!deferFilter)
                                     .setLayoutString(layoutString)
                                     .setRequestedColumns(requestedColumns)
                                     .setPartialAggregationsPushedDown(false)
                                     .setAppendRowNumberEnabled(appendRowNumber)
                                     .setHiveTableHandle(hiveTableHandle)
                                     .build()),
-                    remainingExpressions.getDynamicFilterExpression());
+                    unenforcedFilter);
         }
 
         @Override
@@ -219,6 +262,25 @@ public class HiveFilterPushdown
             }
             return false;
         }
+    }
+
+    private static boolean hasSelectiveDomainPredicate(TupleDomain<Subfield> domainPredicate)
+    {
+        return domainPredicate.getDomains()
+                .map(domains -> domains.values().stream()
+                        .anyMatch(domain -> !domain.getValues().isAll()))
+                .orElse(false);
+    }
+
+    private static RowExpression andFilters(RowExpression left, RowExpression right)
+    {
+        if (TRUE_CONSTANT.equals(left)) {
+            return right;
+        }
+        if (TRUE_CONSTANT.equals(right)) {
+            return left;
+        }
+        return and(left, right);
     }
 
     public static ConnectorMetadata getConnectorMetadata(HiveTransactionManager transactionManager, TableHandle tableHandle)
