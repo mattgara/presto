@@ -390,7 +390,7 @@ std::string toVeloxSerdeKind(protocol::ExchangeEncoding encoding) {
 }
 
 // The coordinator sends ANY when the worker supports UCX transport. The
-// in-memory output manager is also the backing store for pages fetched over
+// in-memory manager is also the backing store for pages sent or fetched over
 // HTTP, so absent and explicit HTTP both select Velox's default transport.
 std::string toVeloxTransportKind(
     const std::shared_ptr<protocol::TransportType>& transportType) {
@@ -2958,6 +2958,7 @@ core::PlanNodePtr VeloxInteractiveQueryPlanConverter::toVeloxQueryPlan(
     const std::shared_ptr<protocol::TableWriteInfo>& /*tableWriteInfo*/,
     const protocol::TaskId& taskId) {
   auto rowType = toRowType(node->outputVariables, typeParser_);
+  const auto transportKind = toVeloxTransportKind(node->transportType);
   if (node->orderingScheme) {
     std::vector<core::FieldAccessTypedExprPtr> sortingKeys;
     std::vector<core::SortOrder> sortingOrders;
@@ -2973,10 +2974,11 @@ core::PlanNodePtr VeloxInteractiveQueryPlanConverter::toVeloxQueryPlan(
         rowType,
         sortingKeys,
         sortingOrders,
-        toVeloxSerdeKind(node->encoding));
+        toVeloxSerdeKind(node->encoding),
+        transportKind);
   }
   return std::make_shared<core::ExchangeNode>(
-      node->id, rowType, toVeloxSerdeKind(node->encoding));
+      node->id, rowType, toVeloxSerdeKind(node->encoding), transportKind);
 }
 
 connector::CommitStrategy

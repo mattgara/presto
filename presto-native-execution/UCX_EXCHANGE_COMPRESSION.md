@@ -9,14 +9,15 @@ There are two related but distinct changes:
 1. The native server starts and stops the UCX communicator when
    `cudf.exchange=true`. Each worker requires a unique
    `cudf.exchange.server.port`.
-2. Plan conversion preserves the coordinator's output-transport choice.
-   `ANY` selects the Velox UCX transport. Explicit `HTTP`, or an absent
-   transport field, keeps the existing in-memory output path used by HTTP
-   exchange.
+2. Plan conversion preserves the coordinator's transport choice on both
+   fragment outputs and `RemoteSource` inputs. `ANY` selects the Velox UCX
+   transport. Explicit `HTTP`, or an absent transport field, keeps the existing
+   in-memory path used by HTTP exchange.
 
-The second change is covered by plan-converter tests for all three cases. It is
-not compression policy. It ensures that a plan selected for UCX actually
-reaches the UCX output operator.
+The second change is covered by plan-converter tests for output and input
+transport, including all three transport cases. It is not compression policy.
+It allows hybrid plans to use UCX between native workers while retaining HTTP
+for a coordinator-bound exchange.
 
 The native worker already passes its complete configuration map to
 `CudfConfig`. The matching Velox branch therefore owns the compression

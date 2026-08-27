@@ -57,6 +57,24 @@ std::shared_ptr<const core::PlanNode> assertToVeloxQueryPlan(
   return assertToVeloxFragment(fileName, pool).planNode;
 }
 
+std::shared_ptr<const core::ExchangeNode> convertRemoteSource(
+    const std::optional<std::string>& transportType) {
+  std::string fragment = slurp(test::utils::getDataPath("Output.json"));
+  json j = json::parse(fragment);
+  if (transportType.has_value()) {
+    j["root"]["source"]["transportType"] = transportType.value();
+  }
+
+  protocol::PlanFragment prestoPlan = j;
+  auto pool = memory::deprecatedAddDefaultLeafMemoryPool();
+  auto queryCtx = core::QueryCtx::create();
+  VeloxInteractiveQueryPlanConverter converter(queryCtx.get(), pool.get());
+  const auto veloxFragment = converter.toVeloxQueryPlan(
+      prestoPlan, nullptr, "20201107_130540_00011_wrpkw.1.2.3");
+  return std::dynamic_pointer_cast<const core::ExchangeNode>(
+      veloxFragment.planNode->sources().front());
+}
+
 std::shared_ptr<const core::PlanNode> assertToBatchVeloxQueryPlan(
     const std::string& fileName,
     const std::string& shuffleName,
@@ -211,6 +229,20 @@ TEST_F(PlanConverterTest, outputTransportHttpSelectsInMemory) {
       veloxFragment.planNode.get());
   ASSERT_NE(partitionedOutput, nullptr);
   EXPECT_EQ(partitionedOutput->transportKind(), core::TransportKind::kInMemory);
+}
+
+TEST_F(PlanConverterTest, inputTransportPreserved) {
+  auto exchange = convertRemoteSource(std::nullopt);
+  ASSERT_NE(exchange, nullptr);
+  EXPECT_EQ(exchange->transportKind(), core::TransportKind::kInMemory);
+
+  exchange = convertRemoteSource(std::string{"ANY"});
+  ASSERT_NE(exchange, nullptr);
+  EXPECT_EQ(exchange->transportKind(), core::TransportKind::kUcx);
+
+  exchange = convertRemoteSource(std::string{"HTTP"});
+  ASSERT_NE(exchange, nullptr);
+  EXPECT_EQ(exchange->transportKind(), core::TransportKind::kInMemory);
 }
 
 // Last stage (output) plan for select regionkey, sum(1) from nation group by 1
