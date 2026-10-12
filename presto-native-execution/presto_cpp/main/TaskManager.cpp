@@ -30,6 +30,11 @@
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/time/Timer.h"
 
+#ifdef PRESTO_ENABLE_CUDF
+#include "velox/experimental/cudf/CudfConfig.h"
+#include "velox/experimental/cudf/exec/CudfPlanRewriter.h"
+#endif
+
 using namespace facebook::velox;
 
 using facebook::presto::protocol::TaskId;
@@ -532,7 +537,8 @@ std::unique_ptr<protocol::TaskInfo> TaskManager::createOrUpdateTask(
       updateRequest.outputIds,
       summarize,
       std::move(queryCtx),
-      startProcessCpuTime);
+      startProcessCpuTime,
+      /*isBatch=*/false);
 }
 
 std::unique_ptr<protocol::TaskInfo> TaskManager::createOrUpdateBatchTask(
@@ -553,7 +559,8 @@ std::unique_ptr<protocol::TaskInfo> TaskManager::createOrUpdateBatchTask(
       updateRequest.outputIds,
       summarize,
       std::move(queryCtx),
-      startProcessCpuTime);
+      startProcessCpuTime,
+      /*isBatch=*/true);
 }
 
 std::unique_ptr<TaskInfo> TaskManager::createOrUpdateTaskImpl(
@@ -563,7 +570,8 @@ std::unique_ptr<TaskInfo> TaskManager::createOrUpdateTaskImpl(
     const protocol::OutputBuffers& outputBuffers,
     bool summarize,
     std::shared_ptr<velox::core::QueryCtx> queryCtx,
-    long startProcessCpuTime) {
+    long startProcessCpuTime,
+    bool isBatch) {
   auto receiveTaskUpdateMs = getCurrentTimeMs();
   std::shared_ptr<exec::Task> execTask;
   bool startTask = false;
@@ -582,14 +590,23 @@ std::unique_ptr<TaskInfo> TaskManager::createOrUpdateTaskImpl(
             prestoTask->updateInfoLocked(summarize));
       }
 
+      auto taskPlanFragment = planFragment;
+#ifdef PRESTO_ENABLE_CUDF
+      const auto& cudfConfig = cudf_velox::CudfConfig::getInstance();
+      if (!isBatch && cudfConfig.enabled &&
+          queryCtx->queryConfig().get<bool>(
+              cudf_velox::CudfConfig::kCudfEnabled, cudfConfig.enabled)) {
+        taskPlanFragment.planNode =
+            cudf_velox::CudfPlanRewriter::rewrite(taskPlanFragment.planNode);
+      }
+#endif
       const auto baseSpillDir = *(baseSpillDir_.rlock());
       auto spillDiskOpts =
-          getTaskSpillOptions(taskId, planFragment, queryCtx, baseSpillDir);
+          getTaskSpillOptions(taskId, taskPlanFragment, queryCtx, baseSpillDir);
 
       // taskUniqueId namespaces the ids AssignUniqueId generates across the
       // tasks of a stage; Velox reads it from PlanFragment. Last 10 bits of
       // stageId | last 14 bits of taskId fits PlanFragment's 24-bit budget.
-      auto taskPlanFragment = planFragment;
       taskPlanFragment.taskUniqueId =
           (prestoTask->id.stageId() & ((1 << 10) - 1)) << 14 |
           (prestoTask->id.id() & ((1 << 14) - 1));

@@ -45,6 +45,11 @@
 #include "velox/exec/tests/utils/TempDirectoryPath.h"
 #include "velox/type/Type.h"
 
+#ifdef PRESTO_ENABLE_CUDF
+#include "velox/experimental/cudf/CudfConfig.h"
+#include "velox/experimental/cudf/exec/CudfAggregationNode.h"
+#endif
+
 DECLARE_int32(old_task_ms);
 DECLARE_bool(velox_memory_leak_check_enabled);
 
@@ -960,6 +965,88 @@ TEST_P(TaskManagerTest, taskCleanupWithPendingResultData) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 }
+
+#ifdef PRESTO_ENABLE_CUDF
+TEST_P(TaskManagerTest, compactDecimalSumRewriteGate) {
+  using cudf_velox::CudfAggregationNode;
+  using cudf_velox::CudfConfig;
+
+  auto& cudfConfig = CudfConfig::getInstance();
+  const auto savedCudfConfig = cudfConfig;
+  const auto queuingKey =
+      std::string(SystemConfig::kWorkerOverloadedTaskQueuingEnabled);
+  const bool savedQueuing =
+      SystemConfig::instance()->workerOverloadedTaskQueuingEnabled();
+  SCOPE_EXIT {
+    cudfConfig = savedCudfConfig;
+    SystemConfig::instance()->setValue(
+        queuingKey, savedQueuing ? "true" : "false");
+    taskManager_->setServerOverloaded(false);
+  };
+  SystemConfig::instance()->setValue(queuingKey, "true");
+  // Keep tasks queued so inspecting their plans needs no GPU operators or CUDA.
+  taskManager_->setServerOverloaded(true);
+  cudfConfig.functionNamePrefix = "";
+
+  auto fragment = PlanBuilder()
+                      .tableScan(ROW({{"d", DECIMAL(18, 2)}}))
+                      .partialAggregation({}, {"sum(d) AS s"})
+                      .finalAggregation()
+                      .partitionedOutput({}, 1, {"s"}, GetParam())
+                      .planFragment();
+  const auto& originalFinal = fragment.planNode->sources()[0];
+  const auto& originalPartial = originalFinal->sources()[0];
+  ASSERT_EQ(*originalPartial->outputType()->childAt(0), *VARBINARY());
+
+  struct TestCase {
+    bool workerEnabled;
+    bool exchangeEnabled;
+    bool queryEnabled;
+    bool expectRewrite;
+  };
+  const std::vector<TestCase> cases = {
+      {true, true, true, true},
+      {false, true, true, false},
+      {true, false, true, true},
+      {true, true, false, false}};
+  for (size_t i = 0; i < cases.size(); ++i) {
+    SCOPED_TRACE(i);
+    const auto& test = cases[i];
+    cudfConfig.enabled = test.workerEnabled;
+    cudfConfig.exchange = test.exchangeEnabled;
+    auto queryCtx = core::QueryCtx::create(
+        driverExecutor_.get(),
+        core::QueryConfig(
+            {{CudfConfig::kCudfEnabled,
+              test.queryEnabled ? "true" : "false"}}));
+    const protocol::TaskId taskId = fmt::format("compactRewrite{}.0.0.1.0", i);
+    SCOPE_EXIT {
+      taskManager_->deleteTask(taskId, true, true, /*shouldDropTask=*/true);
+    };
+    taskManager_->createOrUpdateTask(
+        taskId, {}, fragment, true, std::move(queryCtx), 0);
+    auto prestoTask = taskManager_->tasks().at(taskId);
+    ASSERT_NE(prestoTask->task, nullptr);
+    ASSERT_FALSE(prestoTask->taskStarted);
+    const auto& actual = prestoTask->task->planFragment().planNode;
+    EXPECT_EQ(*actual->outputType(), *fragment.planNode->outputType());
+    if (test.expectRewrite) {
+      const auto* final =
+          dynamic_cast<const CudfAggregationNode*>(actual->sources()[0].get());
+      ASSERT_NE(final, nullptr);
+      const auto* partial =
+          dynamic_cast<const CudfAggregationNode*>(final->sources()[0].get());
+      ASSERT_NE(partial, nullptr);
+      EXPECT_TRUE(final->usesCompactDecimalSum(0));
+      EXPECT_TRUE(partial->usesCompactDecimalSum(0));
+      EXPECT_EQ(*partial->outputType()->childAt(0), *DECIMAL(38, 2));
+    } else {
+      EXPECT_EQ(actual, fragment.planNode);
+    }
+    EXPECT_EQ(*originalPartial->outputType()->childAt(0), *VARBINARY());
+  }
+}
+#endif
 
 // Tests a grouped execution task with no splits and task queuing enabled.
 TEST_P(TaskManagerTest, queuedEmptyGroupedExecutionTask) {

@@ -244,7 +244,8 @@ class TaskManager {
       const protocol::OutputBuffers& outputBuffers,
       bool summarize,
       std::shared_ptr<velox::core::QueryCtx> queryCtx,
-      long startProcessCpuTime);
+      long startProcessCpuTime,
+      bool isBatch);
 
   std::shared_ptr<PrestoTask> findOrCreateTask(
       const protocol::TaskId& taskId,
