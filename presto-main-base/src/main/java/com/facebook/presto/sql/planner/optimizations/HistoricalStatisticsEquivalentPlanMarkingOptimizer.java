@@ -25,8 +25,6 @@ import com.facebook.presto.spi.plan.LimitNode;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.plan.SemiJoinNode;
-import com.facebook.presto.spi.plan.TopNNode;
-import com.facebook.presto.spi.plan.TopNRowNumberNode;
 import com.facebook.presto.sql.planner.StatsEquivalentPlanNodeWithLimit;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.plan.SimplePlanRewriter;
@@ -55,8 +53,9 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
 public class HistoricalStatisticsEquivalentPlanMarkingOptimizer
         implements PlanOptimizer
 {
-    private static final Set<Class<? extends PlanNode>> LIMITING_NODES =
-            ImmutableSet.of(TopNNode.class, LimitNode.class, DistinctLimitNode.class, TopNRowNumberNode.class);
+    // Nodes that can stop reading their input early. TopN and TopNRowNumber read all of their input, so they do not
+    // change the statistics of the nodes below them.
+    private static final Set<Class<? extends PlanNode>> LIMITING_NODES = ImmutableSet.of(LimitNode.class, DistinctLimitNode.class);
     private static final List<Class<? extends PlanNode>> PRECOMPUTE_PLAN_NODES = ImmutableList.of(JoinNode.class, SemiJoinNode.class, AggregationNode.class);
     private final StatsCalculator statsCalculator;
 
@@ -188,18 +187,6 @@ public class HistoricalStatisticsEquivalentPlanMarkingOptimizer
 
         @Override
         public PlanNode visitLimit(LimitNode node, RewriteContext<Context> context)
-        {
-            return visitLimitingNode(node, context);
-        }
-
-        @Override
-        public PlanNode visitTopN(TopNNode node, RewriteContext<Context> context)
-        {
-            return visitLimitingNode(node, context);
-        }
-
-        @Override
-        public PlanNode visitTopNRowNumber(TopNRowNumberNode node, RewriteContext<Context> context)
         {
             return visitLimitingNode(node, context);
         }

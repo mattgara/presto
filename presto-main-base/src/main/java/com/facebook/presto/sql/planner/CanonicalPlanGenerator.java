@@ -297,7 +297,7 @@ public class CanonicalPlanGenerator
                 node.getCount(),
                 getCanonicalOrderingScheme(node.getOrderingScheme(), context.getExpressions()),
                 node.getStep());
-        context.addLimitingNodePlan(node, new CanonicalPlan(result, strategy));
+        context.addPlan(node, new CanonicalPlan(result, strategy));
         return Optional.of(result);
     }
 
@@ -705,7 +705,7 @@ public class CanonicalPlanGenerator
                 node.getMaxRowCountPerPartition(),
                 node.isPartial(),
                 Optional.empty());
-        context.addLimitingNodePlan(node, new CanonicalPlan(canonicalPlan, strategy));
+        context.addPlan(node, new CanonicalPlan(canonicalPlan, strategy));
         return Optional.of(canonicalPlan);
     }
 

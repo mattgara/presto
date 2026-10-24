@@ -18,8 +18,6 @@ import com.facebook.presto.spi.plan.DistinctLimitNode;
 import com.facebook.presto.spi.plan.LimitNode;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeId;
-import com.facebook.presto.spi.plan.TopNNode;
-import com.facebook.presto.spi.plan.TopNRowNumberNode;
 import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.planner.plan.InternalPlanNode;
 import com.facebook.presto.sql.planner.plan.InternalPlanVisitor;
@@ -39,13 +37,13 @@ import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Used to represent a stats equivalent plan which has a downstream limiting node, like LimitNode, TopNNode etc.
+ * Used to represent a stats equivalent plan which has a downstream limiting node, a LimitNode or DistinctLimitNode.
  * We include the Limiting node in the definition as it can affect its stats.
  */
 public class StatsEquivalentPlanNodeWithLimit
         extends InternalPlanNode
 {
-    private static final Set<Class<?>> LIMITING_NODES = ImmutableSet.of(LimitNode.class, TopNNode.class, TopNRowNumberNode.class, DistinctLimitNode.class);
+    private static final Set<Class<?>> LIMITING_NODES = ImmutableSet.of(LimitNode.class, DistinctLimitNode.class);
 
     // TODO: We are storing duplicated information at multiple levels. Look into if we can optimize it.
     private final PlanNode plan;
