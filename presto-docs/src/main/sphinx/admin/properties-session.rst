@@ -450,6 +450,17 @@ Moves a selective join below a grouped aggregation that it joins on the grouping
 
 The corresponding configuration property is :ref:`admin/properties:\`\`optimizer.push-selective-join-below-aggregation\`\``.
 
+``combine_paired_exists_subqueries``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Evaluates two correlated ``EXISTS`` subqueries over one table, one refining the other, in a single
+aggregation.
+
+The corresponding configuration property is :ref:`admin/properties:\`\`optimizer.combine-paired-exists-subqueries\`\``.
+
 ``rewrite_outer_join_to_inner_through_aggregation``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

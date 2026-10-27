@@ -955,6 +955,20 @@ input, the same ratio that limits the pushdown of aggregations below joins.
 
 The corresponding session property is :ref:`admin/properties-session:\`\`push_selective_join_below_aggregation\`\``.
 
+``optimizer.combine-paired-exists-subqueries``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Evaluates two correlated ``EXISTS`` subqueries over the same table, where the predicate of one adds
+conditions to the predicate of the other, in a single aggregation instead of two. For example,
+TPC-H Q21 has an ``EXISTS`` and a ``NOT EXISTS`` subquery over ``lineitem``. The combined
+aggregation counts the rows matching the shared predicate and flags the rows that also match the
+added conditions.
+
+The corresponding session property is :ref:`admin/properties-session:\`\`combine_paired_exists_subqueries\`\``.
+
 ``optimizer.rewrite-outer-join-to-inner-through-aggregation``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

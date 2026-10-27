@@ -299,6 +299,7 @@ public class FeaturesConfig
     private boolean inPredicatesAsInnerJoinsEnabled;
     private double pushAggregationBelowJoinByteReductionThreshold = 1;
     private boolean pushSelectiveJoinBelowAggregation;
+    private boolean combinePairedExistsSubqueries;
     private boolean rewriteOuterJoinToInnerThroughAggregation;
     private boolean prefilterForGroupbyLimit;
     private boolean isOptimizeJoinProbeWithEmptyBuildRuntime;
@@ -3094,6 +3095,19 @@ public class FeaturesConfig
     public FeaturesConfig setPushSelectiveJoinBelowAggregation(boolean pushSelectiveJoinBelowAggregation)
     {
         this.pushSelectiveJoinBelowAggregation = pushSelectiveJoinBelowAggregation;
+        return this;
+    }
+
+    public boolean isCombinePairedExistsSubqueries()
+    {
+        return combinePairedExistsSubqueries;
+    }
+
+    @Config("optimizer.combine-paired-exists-subqueries")
+    @ConfigDescription("Evaluate two correlated EXISTS subqueries over one table, one refining the other, in a single aggregation")
+    public FeaturesConfig setCombinePairedExistsSubqueries(boolean combinePairedExistsSubqueries)
+    {
+        this.combinePairedExistsSubqueries = combinePairedExistsSubqueries;
         return this;
     }
 
