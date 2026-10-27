@@ -298,6 +298,7 @@ public class FeaturesConfig
     private boolean isRemoveRedundantDistinctAggregationEnabled = true;
     private boolean inPredicatesAsInnerJoinsEnabled;
     private double pushAggregationBelowJoinByteReductionThreshold = 1;
+    private boolean pushSelectiveJoinBelowAggregation;
     private boolean prefilterForGroupbyLimit;
     private boolean isOptimizeJoinProbeWithEmptyBuildRuntime;
     private boolean useDefaultsForCorrelatedAggregationPushdownThroughOuterJoins = true;
@@ -3079,6 +3080,19 @@ public class FeaturesConfig
     public FeaturesConfig setPushAggregationBelowJoinByteReductionThreshold(double pushAggregationBelowJoinByteReductionThreshold)
     {
         this.pushAggregationBelowJoinByteReductionThreshold = pushAggregationBelowJoinByteReductionThreshold;
+        return this;
+    }
+
+    public boolean isPushSelectiveJoinBelowAggregation()
+    {
+        return pushSelectiveJoinBelowAggregation;
+    }
+
+    @Config("optimizer.push-selective-join-below-aggregation")
+    @ConfigDescription("Move a selective join below a grouped aggregation that it joins on the grouping keys")
+    public FeaturesConfig setPushSelectiveJoinBelowAggregation(boolean pushSelectiveJoinBelowAggregation)
+    {
+        this.pushSelectiveJoinBelowAggregation = pushSelectiveJoinBelowAggregation;
         return this;
     }
 

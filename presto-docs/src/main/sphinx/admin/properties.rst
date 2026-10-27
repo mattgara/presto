@@ -939,6 +939,22 @@ to make the query plan easier to read.
 
 The corresponding session property is :ref:`admin/properties-session:\`\`optimize_hash_generation\`\``.
 
+``optimizer.push-selective-join-below-aggregation``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Moves a selective join below a grouped aggregation that it joins on the grouping keys, so the
+aggregation reads only the rows that survive the join. For example, in TPC-H Q17 the per-part
+average quantity is computed only for the selected parts instead of for every part. Each moved
+row gets a unique id that is added to the grouping keys, which keeps duplicate rows of the moved
+side apart. The join is moved only when statistics show that it is selective: its estimated output
+is at most ``optimizer.push-aggregation-below-join-byte-reduction-threshold`` times the size of its
+input, the same ratio that limits the pushdown of aggregations below joins.
+
+The corresponding session property is :ref:`admin/properties-session:\`\`push_selective_join_below_aggregation\`\``.
+
 ``optimizer.rewrite-approx-distinct-if-to-mask``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

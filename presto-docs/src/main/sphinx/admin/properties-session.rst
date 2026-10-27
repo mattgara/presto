@@ -440,6 +440,16 @@ to make the query plan easier to read.
 
 The corresponding configuration property is :ref:`admin/properties:\`\`optimizer.optimize-hash-generation\`\``.
 
+``push_selective_join_below_aggregation``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Moves a selective join below a grouped aggregation that it joins on the grouping keys.
+
+The corresponding configuration property is :ref:`admin/properties:\`\`optimizer.push-selective-join-below-aggregation\`\``.
+
 ``rewrite_approx_distinct_if_to_mask``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
