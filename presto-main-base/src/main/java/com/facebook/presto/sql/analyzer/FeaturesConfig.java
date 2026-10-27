@@ -299,6 +299,7 @@ public class FeaturesConfig
     private boolean inPredicatesAsInnerJoinsEnabled;
     private double pushAggregationBelowJoinByteReductionThreshold = 1;
     private boolean pushSelectiveJoinBelowAggregation;
+    private boolean rewriteOuterJoinToInnerThroughAggregation;
     private boolean prefilterForGroupbyLimit;
     private boolean isOptimizeJoinProbeWithEmptyBuildRuntime;
     private boolean useDefaultsForCorrelatedAggregationPushdownThroughOuterJoins = true;
@@ -3093,6 +3094,19 @@ public class FeaturesConfig
     public FeaturesConfig setPushSelectiveJoinBelowAggregation(boolean pushSelectiveJoinBelowAggregation)
     {
         this.pushSelectiveJoinBelowAggregation = pushSelectiveJoinBelowAggregation;
+        return this;
+    }
+
+    public boolean isRewriteOuterJoinToInnerThroughAggregation()
+    {
+        return rewriteOuterJoinToInnerThroughAggregation;
+    }
+
+    @Config("optimizer.rewrite-outer-join-to-inner-through-aggregation")
+    @ConfigDescription("Rewrite an outer join below an aggregation to an inner join when the filter on the aggregation rejects the groups of unmatched rows")
+    public FeaturesConfig setRewriteOuterJoinToInnerThroughAggregation(boolean rewriteOuterJoinToInnerThroughAggregation)
+    {
+        this.rewriteOuterJoinToInnerThroughAggregation = rewriteOuterJoinToInnerThroughAggregation;
         return this;
     }
 

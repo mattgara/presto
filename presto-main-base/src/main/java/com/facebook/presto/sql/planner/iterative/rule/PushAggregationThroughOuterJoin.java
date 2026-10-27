@@ -137,12 +137,7 @@ public class PushAggregationThroughOuterJoin
     {
         JoinNode join = captures.get(JOIN);
 
-        if (join.getFilter().isPresent()
-                || !(join.getType() == JoinType.LEFT || join.getType() == JoinType.RIGHT)
-                || aggregation.getGroupingSetCount() != 1 // Must have exactly one grouping set
-                || aggregation.getGroupingKeys().isEmpty() // Must be a non-scalar aggregation
-                || !groupsOnAllColumns(aggregation.getGroupingKeys(), getOuterTable(join).getOutputVariables())
-                || !isDistinctInternal(getOuterTable(join), context.getLookup())) {
+        if (!groupsOnOuterSideOfOuterJoin(aggregation, join) || !isDistinctInternal(getOuterTable(join), context.getLookup())) {
             return Result.empty();
         }
 
@@ -205,6 +200,19 @@ public class PushAggregationThroughOuterJoin
         }
 
         return Result.ofPlanNode(resultNode.get());
+    }
+
+    /**
+     * Whether the aggregation and the outer join that is its source have the shape this rule pushes: a join without
+     * a filter and a single grouping set on all columns of the outer side. The rule also requires distinct outer rows.
+     */
+    public static boolean groupsOnOuterSideOfOuterJoin(AggregationNode aggregation, JoinNode join)
+    {
+        return !join.getFilter().isPresent()
+                && (join.getType() == JoinType.LEFT || join.getType() == JoinType.RIGHT)
+                && aggregation.getGroupingSetCount() == 1 // Must have exactly one grouping set
+                && !aggregation.getGroupingKeys().isEmpty() // Must be a non-scalar aggregation
+                && groupsOnAllColumns(aggregation.getGroupingKeys(), getOuterTable(join).getOutputVariables());
     }
 
     private static PlanNode getInnerTable(JoinNode join)

@@ -342,6 +342,7 @@ public final class SystemSessionProperties
     public static final String IN_PREDICATES_AS_INNER_JOINS_ENABLED = "in_predicates_as_inner_joins_enabled";
     public static final String PUSH_AGGREGATION_BELOW_JOIN_BYTE_REDUCTION_THRESHOLD = "push_aggregation_below_join_byte_reduction_threshold";
     public static final String PUSH_SELECTIVE_JOIN_BELOW_AGGREGATION = "push_selective_join_below_aggregation";
+    public static final String REWRITE_OUTER_JOIN_TO_INNER_THROUGH_AGGREGATION = "rewrite_outer_join_to_inner_through_aggregation";
     public static final String KEY_BASED_SAMPLING_ENABLED = "key_based_sampling_enabled";
     public static final String KEY_BASED_SAMPLING_PERCENTAGE = "key_based_sampling_percentage";
     public static final String KEY_BASED_SAMPLING_FUNCTION = "key_based_sampling_function";
@@ -2096,6 +2097,11 @@ public final class SystemSessionProperties
                         PUSH_SELECTIVE_JOIN_BELOW_AGGREGATION,
                         "Move a selective join below a grouped aggregation that it joins on the grouping keys",
                         featuresConfig.isPushSelectiveJoinBelowAggregation(),
+                        false),
+                booleanProperty(
+                        REWRITE_OUTER_JOIN_TO_INNER_THROUGH_AGGREGATION,
+                        "Rewrite an outer join below an aggregation to an inner join when the filter on the aggregation rejects the groups of unmatched rows",
+                        featuresConfig.isRewriteOuterJoinToInnerThroughAggregation(),
                         false),
                 booleanProperty(
                         PREFILTER_FOR_GROUPBY_LIMIT,
@@ -3992,6 +3998,11 @@ public final class SystemSessionProperties
     public static boolean isPushSelectiveJoinBelowAggregationEnabled(Session session)
     {
         return session.getSystemProperty(PUSH_SELECTIVE_JOIN_BELOW_AGGREGATION, Boolean.class);
+    }
+
+    public static boolean isRewriteOuterJoinToInnerThroughAggregationEnabled(Session session)
+    {
+        return session.getSystemProperty(REWRITE_OUTER_JOIN_TO_INNER_THROUGH_AGGREGATION, Boolean.class);
     }
 
     public static boolean isUseBroadcastJoinWhenBuildSizeSmallProbeSizeUnknownEnabled(Session session)

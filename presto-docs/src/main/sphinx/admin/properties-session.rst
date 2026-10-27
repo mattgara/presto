@@ -450,6 +450,17 @@ Moves a selective join below a grouped aggregation that it joins on the grouping
 
 The corresponding configuration property is :ref:`admin/properties:\`\`optimizer.push-selective-join-below-aggregation\`\``.
 
+``rewrite_outer_join_to_inner_through_aggregation``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Rewrites an outer join below an aggregation to an inner join when the filter on the aggregation rejects
+every group made only of unmatched rows and the unmatched rows cannot change the other groups.
+
+The corresponding configuration property is :ref:`admin/properties:\`\`optimizer.rewrite-outer-join-to-inner-through-aggregation\`\``.
+
 ``rewrite_approx_distinct_if_to_mask``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

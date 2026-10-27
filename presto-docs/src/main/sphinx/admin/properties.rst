@@ -955,6 +955,21 @@ input, the same ratio that limits the pushdown of aggregations below joins.
 
 The corresponding session property is :ref:`admin/properties-session:\`\`push_selective_join_below_aggregation\`\``.
 
+``optimizer.rewrite-outer-join-to-inner-through-aggregation``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Rewrites an outer join below an aggregation to an inner join when the filter on the aggregation
+rejects every group made only of unmatched rows (for example ``HAVING count(r.x) > 0`` or
+``HAVING sum(r.x) > 10``) and the unmatched rows cannot change the other groups: each group is a single
+row of the outer side, or every aggregate is count, sum, min, max or avg of inner-side values. The inner
+join can then be reordered. See Galindo-Legaria and Joshi, *Orthogonal Optimization of Subqueries and
+Aggregation* (SIGMOD 2001).
+
+The corresponding session property is :ref:`admin/properties-session:\`\`rewrite_outer_join_to_inner_through_aggregation\`\``.
+
 ``optimizer.rewrite-approx-distinct-if-to-mask``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

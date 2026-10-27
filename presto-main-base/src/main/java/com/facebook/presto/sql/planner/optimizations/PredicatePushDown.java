@@ -25,6 +25,7 @@ import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.spi.VariableAllocator;
 import com.facebook.presto.spi.WarningCollector;
+import com.facebook.presto.spi.function.FunctionHandle;
 import com.facebook.presto.spi.plan.AggregationNode;
 import com.facebook.presto.spi.plan.Assignments;
 import com.facebook.presto.spi.plan.EquiJoinClause;
@@ -66,6 +67,7 @@ import com.facebook.presto.sql.relational.Expressions;
 import com.facebook.presto.sql.relational.FunctionResolution;
 import com.facebook.presto.sql.relational.RowExpressionDeterminismEvaluator;
 import com.facebook.presto.sql.relational.RowExpressionDomainTranslator;
+import com.facebook.presto.sql.tree.QualifiedName;
 import com.google.common.collect.BiMap;
 import com.google.common.collect.HashBiMap;
 import com.google.common.collect.ImmutableList;
@@ -77,6 +79,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -84,8 +87,10 @@ import java.util.Set;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
+import static com.facebook.presto.SystemSessionProperties.isRewriteOuterJoinToInnerThroughAggregationEnabled;
 import static com.facebook.presto.SystemSessionProperties.shouldGenerateDomainFilters;
 import static com.facebook.presto.SystemSessionProperties.shouldInferInequalityPredicates;
+import static com.facebook.presto.SystemSessionProperties.shouldPushAggregationThroughJoin;
 import static com.facebook.presto.common.function.OperatorType.BETWEEN;
 import static com.facebook.presto.common.function.OperatorType.EQUAL;
 import static com.facebook.presto.common.function.OperatorType.GREATER_THAN_OR_EQUAL;
@@ -110,6 +115,9 @@ import static com.facebook.presto.spi.plan.ProjectNode.Locality.REMOTE;
 import static com.facebook.presto.spi.plan.ProjectNode.Locality.UNKNOWN;
 import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.facebook.presto.sql.planner.VariablesExtractor.extractUnique;
+import static com.facebook.presto.sql.planner.iterative.rule.PushAggregationThroughOuterJoin.groupsOnOuterSideOfOuterJoin;
+import static com.facebook.presto.sql.planner.optimizations.DistinctOutputQueryUtil.isDistinct;
+import static com.facebook.presto.sql.planner.optimizations.PlanNodeSearcher.searchFrom;
 import static com.facebook.presto.sql.planner.plan.AssignmentUtils.identityAssignments;
 import static com.facebook.presto.sql.relational.Expressions.call;
 import static com.facebook.presto.sql.relational.Expressions.constant;
@@ -1431,6 +1439,140 @@ public class PredicatePushDown
                     node.getDynamicFilters());
         }
 
+        /**
+         * Outer join simplification through an aggregation (Galindo-Legaria and Joshi, "Orthogonal Optimization of
+         * Subqueries and Aggregation", SIGMOD 2001, null rejection derived in GroupBy). An outer join below the
+         * aggregation, possibly under projections, becomes an inner join when
+         * <ol>
+         *     <li>the filter above the aggregation rejects every group made only of unmatched rows, which is tested by
+         *         substituting each aggregate's value on such a group (count of an inner-side value is 0, sum, min,
+         *         max and avg of it are NULL) and inner-side grouping keys with NULL, and</li>
+         *     <li>unmatched rows cannot change the aggregates of a group that also has matched rows: each group is a
+         *         single outer row (grouped on a unique id assigned to the outer rows), or every aggregate is count,
+         *         sum, min, max or avg of values that are NULL in unmatched rows.</li>
+         * </ol>
+         * An aggregation that PushAggregationThroughOuterJoin can push below the join is left to that rule.
+         * 'rewrittenSource' is the aggregation's source after predicate pushdown.
+         */
+        private Optional<PlanNode> tryConvertOuterJoinToInner(AggregationNode aggregation, PlanNode rewrittenSource, RowExpression postAggregationPredicate)
+        {
+            List<ProjectNode> projects = new ArrayList<>();
+            PlanNode source = rewrittenSource;
+            while (source instanceof ProjectNode) {
+                projects.add((ProjectNode) source);
+                source = ((ProjectNode) source).getSource();
+            }
+            if (!(source instanceof JoinNode) || (((JoinNode) source).getType() != LEFT && ((JoinNode) source).getType() != RIGHT)) {
+                return Optional.empty();
+            }
+            JoinNode join = (JoinNode) source;
+            PlanNode outer = join.getType() == LEFT ? join.getLeft() : join.getRight();
+            PlanNode inner = join.getType() == LEFT ? join.getRight() : join.getLeft();
+
+            // Variables that are NULL in every unmatched row, through the projections (bottom up)
+            Set<VariableReferenceExpression> nullWhenUnmatched = new HashSet<>(inner.getOutputVariables());
+            for (int i = projects.size() - 1; i >= 0; i--) {
+                for (Map.Entry<VariableReferenceExpression, RowExpression> assignment : projects.get(i).getAssignments().getMap().entrySet()) {
+                    if (isNullWhenUnmatched(assignment.getValue(), nullWhenUnmatched)) {
+                        nullWhenUnmatched.add(assignment.getKey());
+                    }
+                }
+            }
+
+            Set<VariableReferenceExpression> groupingKeys = ImmutableSet.copyOf(aggregation.getGroupingKeys());
+            boolean singleOuterRowGroups = searchFrom(outer)
+                    .where(node -> node instanceof AssignUniqueId && groupingKeys.contains(((AssignUniqueId) node).getIdVariable()))
+                    .recurseOnlyWhen(node -> node instanceof ProjectNode || node instanceof FilterNode)
+                    .matches();
+
+            // PushAggregationThroughOuterJoin aggregates the inner side before the join, and the outer join check then
+            // applies to the join it leaves. Converting here first would keep the aggregation above the join.
+            if (projects.isEmpty()
+                    && shouldPushAggregationThroughJoin(session)
+                    && (singleOuterRowGroups || isDistinct(outer))
+                    && groupsOnOuterSideOfOuterJoin(aggregation, join)) {
+                return Optional.empty();
+            }
+            boolean aggregatesIgnoreUnmatchedRows = aggregation.getAggregations().values().stream()
+                    .allMatch(value -> isNullIgnoringAggregate(value.getFunctionHandle())
+                            && !value.getArguments().isEmpty()
+                            && value.getArguments().stream().allMatch(argument -> isNullWhenUnmatched(argument, nullWhenUnmatched)));
+            if (!singleOuterRowGroups && !aggregatesIgnoreUnmatchedRows) {
+                return Optional.empty();
+            }
+
+            // The values a group made only of unmatched rows produces; unknown values are left as variables
+            Map<RowExpression, RowExpression> unmatchedGroupValues = new HashMap<>();
+            for (VariableReferenceExpression key : aggregation.getGroupingKeys()) {
+                if (nullWhenUnmatched.contains(key)) {
+                    unmatchedGroupValues.put(key, constantNull(key.getSourceLocation(), key.getType()));
+                }
+            }
+            for (Map.Entry<VariableReferenceExpression, AggregationNode.Aggregation> entry : aggregation.getAggregations().entrySet()) {
+                AggregationNode.Aggregation value = entry.getValue();
+                VariableReferenceExpression output = entry.getKey();
+                boolean argumentsNull = !value.getArguments().isEmpty()
+                        && value.getArguments().stream().allMatch(argument -> isNullWhenUnmatched(argument, nullWhenUnmatched));
+                if (argumentsNull && isAggregate(value.getFunctionHandle(), "count")) {
+                    unmatchedGroupValues.put(output, constant(0L, BIGINT));
+                }
+                else if (argumentsNull && isNullIgnoringAggregate(value.getFunctionHandle())) {
+                    unmatchedGroupValues.put(output, constantNull(output.getSourceLocation(), output.getType()));
+                }
+                else if (value.getArguments().isEmpty() && singleOuterRowGroups && isAggregate(value.getFunctionHandle(), "count")
+                        && !value.getFilter().isPresent() && !value.getMask().isPresent()) {
+                    unmatchedGroupValues.put(output, constant(1L, BIGINT));
+                }
+            }
+            for (RowExpression conjunct : extractConjuncts(postAggregationPredicate)) {
+                if (!determinismEvaluator.isDeterministic(conjunct)) {
+                    continue;
+                }
+                RowExpression result = expressionOptimizerProvider.getExpressionOptimizer(session.toConnectorSession()).optimize(
+                        RowExpressionNodeInliner.replaceExpression(conjunct, unmatchedGroupValues),
+                        ExpressionOptimizer.Level.OPTIMIZED,
+                        session.toConnectorSession());
+                if (Expressions.isNull(result) || FALSE_CONSTANT.equals(result)) {
+                    PlanNode rewritten = new JoinNode(
+                            join.getSourceLocation(),
+                            join.getId(),
+                            INNER,
+                            join.getLeft(),
+                            join.getRight(),
+                            join.getCriteria(),
+                            join.getOutputVariables(),
+                            join.getFilter(),
+                            join.getLeftHashVariable(),
+                            join.getRightHashVariable(),
+                            join.getDistributionType(),
+                            join.getDynamicFilters());
+                    for (int i = projects.size() - 1; i >= 0; i--) {
+                        rewritten = projects.get(i).replaceChildren(ImmutableList.of(rewritten));
+                    }
+                    return Optional.of(rewritten);
+                }
+            }
+            return Optional.empty();
+        }
+
+        // Whether the expression is NULL when the given variables are NULL
+        private boolean isNullWhenUnmatched(RowExpression expression, Set<VariableReferenceExpression> nullVariables)
+        {
+            return Expressions.isNull(nullInputEvaluator(nullVariables, expression));
+        }
+
+        // count, sum, min, max and avg skip NULL inputs
+        private boolean isNullIgnoringAggregate(FunctionHandle functionHandle)
+        {
+            return ImmutableList.of("count", "sum", "min", "max", "avg").stream().anyMatch(name -> isAggregate(functionHandle, name));
+        }
+
+        private boolean isAggregate(FunctionHandle functionHandle, String name)
+        {
+            return functionAndTypeManager.getFunctionMetadata(functionHandle).getName()
+                    .equals(functionAndTypeManager.getFunctionAndTypeResolver().qualifyObjectName(QualifiedName.of(name)));
+        }
+
         private boolean canConvertOuterToInner(List<VariableReferenceExpression> innerVariablesForOuterJoin, RowExpression inheritedPredicate)
         {
             Set<VariableReferenceExpression> innerVariables = ImmutableSet.copyOf(innerVariablesForOuterJoin);
@@ -1731,6 +1873,11 @@ public class PredicatePushDown
             postAggregationConjuncts.addAll(equalityPartition.getScopeStraddlingEqualities());
 
             PlanNode rewrittenSource = context.rewrite(node.getSource(), logicalRowExpressions.combineConjuncts(pushdownConjuncts));
+            if (isRewriteOuterJoinToInnerThroughAggregationEnabled(session) && !postAggregationConjuncts.isEmpty()) {
+                // After the source is rewritten, so that equalities in the join condition are join criteria
+                rewrittenSource = tryConvertOuterJoinToInner(node, rewrittenSource, logicalRowExpressions.combineConjuncts(postAggregationConjuncts))
+                        .orElse(rewrittenSource);
+            }
 
             PlanNode output = node;
             if (rewrittenSource != node.getSource()) {
