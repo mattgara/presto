@@ -40,6 +40,7 @@ import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Logger;
 
 import static com.nvidia.presto.samplestats.ExpressionSql.quote;
 import static java.lang.String.format;
@@ -58,6 +59,8 @@ public class SampleStatsProvider
         implements HistoryBasedPlanStatisticsProvider
 {
     private static final HistoricalPlanStatistics NONE = new HistoricalPlanStatistics(Collections.emptyList());
+    // Presto routes java.util.logging to the server log.
+    private static final Logger LOG = Logger.getLogger(SampleStatsProvider.class.getName());
 
     private final Map<String, SampleTable> tables;
     private final String schema;
@@ -66,6 +69,9 @@ public class SampleStatsProvider
     // Plan node classes (simple names) to answer; the planner estimates the others itself.
     private final Set<String> nodeTypes;
     private final Map<String, Optional<double[]>> cache = new ConcurrentHashMap<>();
+    // A node the provider should answer but cannot falls back to the planner's own estimate, which keeps results
+    // correct but quietly loses the sample estimate. Each distinct reason is logged once as a warning.
+    private final Set<String> warned = ConcurrentHashMap.newKeySet();
 
     public SampleStatsProvider(Path sampleDir, Path log, Set<String> nodeTypes)
     {
@@ -92,7 +98,9 @@ public class SampleStatsProvider
         catch (SQLException e) {
             throw new IllegalStateException("Cannot load the samples in " + sampleDir, e);
         }
-        write(format("loaded %d sample tables of %s from %s; answering %s", tables.size(), schema, sampleDir, nodeTypes));
+        String loaded = format("loaded %d sample tables of %s from %s; answering %s", tables.size(), schema, sampleDir, nodeTypes);
+        LOG.info(loaded);
+        write(loaded);
     }
 
     @Override
@@ -159,6 +167,7 @@ public class SampleStatsProvider
             relation = new PlanTranslator(schema, tables).translate(node);
         }
         catch (RuntimeException e) {
+            warnOnce(node.getClass().getSimpleName() + " not translated: " + e.getMessage());
             write(id + " not translated: " + e.getMessage());
             return Optional.empty();
         }
@@ -188,6 +197,7 @@ public class SampleStatsProvider
             }
         }
         catch (SQLException e) {
+            warnOnce(node.getClass().getSimpleName() + " failed on the sample: " + e.getMessage().split("\n")[0]);
             write(id + " failed: " + e.getMessage().split("\n")[0] + " | " + sql);
             return Optional.empty();
         }
@@ -229,6 +239,13 @@ public class SampleStatsProvider
                 return ((DecimalType) type).isShort() ? 8 : 16;
             default:
                 return 8;
+        }
+    }
+
+    private void warnOnce(String reason)
+    {
+        if (warned.add(reason)) {
+            LOG.warning("No sample estimate, the planner's own estimate is used: " + reason);
         }
     }
 
