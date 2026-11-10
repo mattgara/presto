@@ -7,26 +7,34 @@ optimization (HBO) fixes the guesses with the row counts of earlier runs of the 
 run of every query and a statistics store (Redis), and a benchmark that relies on it measures a planner that has
 seen the queries before.
 
-This provider gives the planner the same kind of estimates without history. At planning time Presto asks the
-history-based statistics provider for the output of each plan node. For a node over one table (a scan with its
-pushed-down filters, then filters, projections and aggregations), the provider translates the subtree into SQL over
-a small sample of the table, runs it in an embedded DuckDB and scales the row count to the full table. The samples
-are written once, after `ANALYZE`, by `sample_tables.py`. No Presto changes are needed: the provider is a plugin
-that implements Presto's `HistoryBasedPlanStatisticsProvider` SPI.
+This provider gives the planner the same kind of estimates without history, and uses history once it exists. At
+planning time Presto asks the history-based statistics provider for the output of each plan node. Statistics that
+Presto recorded for the node in earlier runs come first. Otherwise, for a node over one table (a scan with its
+pushed-down filters, then filters, projections and aggregations), a fragment engine evaluates the subtree on a small
+sample of the table and the provider scales the row count to the full table. The samples are written once, after
+`ANALYZE`, by `sample_tables.py`. No Presto changes are needed: the provider is a plugin that implements Presto's
+`HistoryBasedPlanStatisticsProvider` SPI.
 
-By default the provider answers filter and projection nodes only. These carry the selectivities the planner cannot
+By default the provider estimates filter and projection nodes only. These carry the selectivities the planner cannot
 estimate, while its own estimates of scans and joins stay in place.
+
+Modules:
+
+| Module | Contents |
+|---|---|
+| `presto-sample-stats` | the provider (recorded history first, then sample estimates), the fragment engine interface, `sample_tables.py`, `smoke_check.py` |
+| `presto-sample-stats-duckdb` | the `duckdb` fragment engine: translates a fragment to SQL and runs it in an embedded DuckDB |
+| `presto-sample-stats-plugin` | the coordinator plugin; picks the engine named by `engine` from the engines in its directory |
 
 ## Usage
 
-1. Build the plugin against the Presto version the coordinator runs. For a velox-testing Presto build, point
-   `PRESTO_DIR` at its Presto checkout and `MVN_REPOSITORY` at the Maven repository that build filled:
+1. Build the plugin with the Presto checkout the coordinator runs:
 
    ```bash
-   PRESTO_DIR=<presto checkout> MVN_REPOSITORY=<maven repository> ./build.sh
+   ./build.sh
    ```
 
-   The plugin directory is `target/plugin`. Rebuild it whenever the coordinator's Presto version changes.
+   The plugin directory is `presto-sample-stats-plugin/target/presto-sample-stats-plugin-<version>`.
 
 2. With the cluster running and the tables analyzed, write the samples. The default sample size is 100,000 rows per
    table:
@@ -42,14 +50,16 @@ estimate, while its own estimates of scans and joins stay in place.
 3. Start the coordinator with the plugin and the samples. With velox-testing:
 
    ```bash
-   PRESTO_COORDINATOR_PLUGIN_DIR=$PWD/target/plugin PRESTO_COORDINATOR_PLUGIN_DATA=<samples dir> \
+   PRESTO_COORDINATOR_PLUGIN_DIR=<plugin directory> PRESTO_COORDINATOR_PLUGIN_DATA=<samples dir> \
    PRESTO_DISABLED_PLUGINS=redis-hbo-provider PRESTO_HISTORY_BASED_PLANNING=1 \
        presto/scripts/start_native_gpu_presto.sh ...
    ```
 
    This mounts the plugin and the samples (at `/opt/presto-plugin-data`, where the plugin looks for
    `sample-stats.properties`), leaves out the Redis history provider (Presto accepts one provider), and turns on
-   history-based planning with recording off.
+   history-based planning. To prefer the statistics of earlier runs over sample estimates, also turn on recording
+   (`optimizer.track-history-based-plan-statistics=true`); with recording off the provider answers from the samples
+   only.
 
 4. Check that the coordinator plans with the provider:
 
@@ -67,7 +77,10 @@ estimate, while its own estimates of scans and joins stay in place.
 | Property | Default | Meaning |
 |---|---|---|
 | `sample.dir` | the directory of the properties file | samples and `tables.properties` |
-| `node.types` | `FilterNode,ProjectNode` | plan nodes the provider answers |
+| `engine` | `duckdb` | the fragment engine that evaluates fragments on the samples |
+| `node.types` | `FilterNode,ProjectNode` | plan nodes the provider estimates from the samples |
+| `history.record` | `true` | keep the statistics Presto records from finished queries and prefer them over sample estimates |
+| `history.max-nodes` | `100000` | the most plan nodes whose recorded statistics are kept (in memory) |
 | `log.file` | none | one line per estimate, for checking what the provider answered |
 
 ## Limitations
@@ -77,3 +90,6 @@ estimate, while its own estimates of scans and joins stay in place.
 - Nodes over more than one table (joins) and subtrees with constructs the translator does not cover (for example
   window functions) get no estimate, and the planner uses its own.
 - The samples describe the data when they were written. Write them again after the tables change.
+- With Hive filter pushdown (`hive.pushdown-filter-enabled=true`) filters move into the table scan. Add
+  `TableScanNode` to `node.types` on such clusters, or the provider has nothing to estimate.
+- Recorded statistics live in coordinator memory and are lost on restart.

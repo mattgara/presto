@@ -236,6 +236,9 @@
         <module>presto-open-telemetry</module>
         <module>presto-openlineage-event-listener</module>
         <module>redis-hbo-provider</module>
+        <module>presto-sample-stats</module>
+        <module>presto-sample-stats-duckdb</module>
+        <module>presto-sample-stats-plugin</module>
         <module>presto-singlestore</module>
         <module>presto-hana</module>
         <module>presto-openapi</module>
