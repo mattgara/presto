@@ -19,35 +19,46 @@ estimate, while its own estimates of scans and joins stay in place.
 
 ## Usage
 
-1. Build the plugin against the Presto version of the sibling `../presto` checkout:
+1. Build the plugin against the Presto version the coordinator runs. For a velox-testing Presto build, point
+   `PRESTO_DIR` at its Presto checkout and `MVN_REPOSITORY` at the Maven repository that build filled:
 
    ```bash
-   presto/sample_stats/build_provider.sh
+   PRESTO_DIR=<presto checkout> MVN_REPOSITORY=<maven repository> ./build.sh
    ```
 
-   The plugin directory is `presto/sample_stats/provider/target/plugin`.
+   The plugin directory is `target/plugin`. Rebuild it whenever the coordinator's Presto version changes.
 
-2. With the cluster running and the tables analyzed (`setup_benchmark_tables.sh`), write the samples. The default
-   sample size is 100,000 rows per table:
+2. With the cluster running and the tables analyzed, write the samples. The default sample size is 100,000 rows per
+   table:
 
    ```bash
-   python3 presto/sample_stats/sample_tables.py -s <schema> -o <samples dir> \
-       -m presto/docker/.hive_metastore
+   python3 sample_tables.py -s <schema> -o <samples dir> -m <hive metastore dir>
    ```
 
    Tables of at most twice the sample size are copied whole. Larger tables keep the rows whose key is a multiple of
    a prime, so each sampled key keeps all of its rows (whole orders of `lineitem`, for example). The key is the
    table's first integer column unless `--key TABLE=COLUMN` names another.
 
-3. Start Presto with `SAMPLE_STATS_DIR` set to the samples directory:
+3. Start the coordinator with the plugin and the samples. With velox-testing:
 
    ```bash
-   SAMPLE_STATS_DIR=<samples dir> presto/scripts/start_native_gpu_presto.sh ...
+   PRESTO_COORDINATOR_PLUGIN_DIR=$PWD/target/plugin PRESTO_COORDINATOR_PLUGIN_DATA=<samples dir> \
+   PRESTO_DISABLED_PLUGINS=redis-hbo-provider PRESTO_HISTORY_BASED_PLANNING=1 \
+       presto/scripts/start_native_gpu_presto.sh ...
    ```
 
-   This turns on history-based planning in the coordinator config (with recording off), mounts the plugin and the
-   samples into the coordinator, and leaves out the Redis history provider (Presto accepts one provider).
-   `SAMPLE_STATS_PLUGIN_DIR` overrides the plugin directory.
+   This mounts the plugin and the samples (at `/opt/presto-plugin-data`, where the plugin looks for
+   `sample-stats.properties`), leaves out the Redis history provider (Presto accepts one provider), and turns on
+   history-based planning with recording off.
+
+4. Check that the coordinator plans with the provider:
+
+   ```bash
+   ./smoke_check.py --schema <schema>
+   ```
+
+   It fails if a filter that table statistics cannot estimate gets no estimate from the provider. The coordinator
+   log also warns once per reason when a node the provider should answer gets no estimate.
 
 ## Configuration
 

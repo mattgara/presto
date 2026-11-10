@@ -25,7 +25,7 @@ import java.util.Properties;
  * nodes it can (filters and projections over one table) on that table's sample and scales the result.
  *
  * <p>Configuration: the properties file named by the environment variable {@code PRESTO_SAMPLE_STATS_CONFIG}
- * (default {@code /opt/sample-stats/sample-stats.properties}); without it the plugin provides nothing. Keys:
+ * (default {@code /opt/presto-plugin-data/sample-stats.properties}); without it the plugin provides nothing. Keys:
  * <ul>
  * <li>{@code sample.dir}: directory of {@code tables.properties} and one Parquet file per table (default: the
  * properties file's directory)</li>
@@ -37,7 +37,7 @@ public class SampleStatsPlugin
         implements Plugin
 {
     static final String CONFIG_ENVIRONMENT_VARIABLE = "PRESTO_SAMPLE_STATS_CONFIG";
-    static final String DEFAULT_CONFIG = "/opt/sample-stats/sample-stats.properties";
+    static final String DEFAULT_CONFIG = "/opt/presto-plugin-data/sample-stats.properties";
     // Plain table scans are left to the cost model, which knows table row counts from ANALYZE: estimating a scan
     // with its pushed-down filter applied gives the planner a scan output it does not expect and changed join orders
     // (TPC-H Q5, Q10). Aggregations are not needed for TPC-H's plans.
