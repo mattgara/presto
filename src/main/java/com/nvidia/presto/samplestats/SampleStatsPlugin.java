@@ -31,7 +31,6 @@ import java.util.Properties;
  * properties file's directory)</li>
  * <li>{@code node.types}: plan node classes to answer (default {@code FilterNode,ProjectNode})</li>
  * <li>{@code log.file}: optional log of every estimate (SQL, sample rows, scaled rows, milliseconds)</li>
- * <li>{@code perturbation.file}: optional sensitivity-test hook, see {@link SampleStatsProvider}</li>
  * </ul>
  */
 public class SampleStatsPlugin
@@ -62,7 +61,6 @@ public class SampleStatsPlugin
         return Collections.singletonList(new SampleStatsProvider(
                 Optional.ofNullable(properties.getProperty("sample.dir")).map(Paths::get).orElse(directory),
                 Optional.ofNullable(properties.getProperty("log.file")).map(Paths::get).orElse(null),
-                new HashSet<>(Arrays.asList(properties.getProperty("node.types", DEFAULT_NODE_TYPES).split(","))),
-                Optional.ofNullable(properties.getProperty("perturbation.file")).map(Paths::get).orElse(null)));
+                new HashSet<>(Arrays.asList(properties.getProperty("node.types", DEFAULT_NODE_TYPES).split(",")))));
     }
 }

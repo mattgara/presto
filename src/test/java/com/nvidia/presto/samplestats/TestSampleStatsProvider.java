@@ -97,11 +97,11 @@ public class TestSampleStatsProvider
     @Test
     public void testFilterRowsBytesAndInputStatistics()
     {
-        PlanStatistics statistics = only(estimate(provider(DEFAULT_TYPES, null), greenParts(TupleDomain.all()), "green"));
+        PlanStatistics statistics = only(estimate(provider(DEFAULT_TYPES), greenParts(TupleDomain.all()), "green"));
         assertEquals(statistics.getRowCount().getValue(), 60_000.0);
         // p_partkey 8 bytes + p_name ("forest green lace", 17 characters) + 4-byte offset.
         assertEquals(statistics.getOutputSize().getValue(), 60_000.0 * (8 + 17 + 4));
-        HistoricalPlanStatisticsEntry entry = estimate(provider(DEFAULT_TYPES, null), greenParts(TupleDomain.all()), "green")
+        HistoricalPlanStatisticsEntry entry = estimate(provider(DEFAULT_TYPES), greenParts(TupleDomain.all()), "green")
                 .getLastRunsStatistics().get(0);
         assertEquals(entry.getInputTableStatistics().get(0).getRowCount().getValue(), 600_000.0);
     }
@@ -111,7 +111,7 @@ public class TestSampleStatsProvider
     {
         Domain below500 = Domain.create(ValueSet.ofRanges(Range.lessThan(BIGINT, 500L)), false);
         TupleDomain<Subfield> domain = TupleDomain.withColumnDomains(Collections.singletonMap(new Subfield("p_partkey"), below500));
-        assertEquals(only(estimate(provider(DEFAULT_TYPES, null), greenParts(domain), "green-below-500")).getRowCount().getValue(), 30_000.0);
+        assertEquals(only(estimate(provider(DEFAULT_TYPES), greenParts(domain), "green-below-500")).getRowCount().getValue(), 30_000.0);
     }
 
     @Test
@@ -126,7 +126,7 @@ public class TestSampleStatsProvider
                 call("GREATER_THAN", BOOLEAN, sum, constant(Decimals.encodeUnscaledValue(BigInteger.valueOf(30000)), SUM)));
         ProjectNode keys = new ProjectNode(Optional.empty(), new PlanNodeId("keys"), having,
                 Assignments.builder().put(orderKey, orderKey).build(), ProjectNode.Locality.LOCAL);
-        HistoricalPlanStatistics statistics = estimate(provider(DEFAULT_TYPES, null), keys, "having");
+        HistoricalPlanStatistics statistics = estimate(provider(DEFAULT_TYPES), keys, "having");
         assertEquals(only(statistics).getRowCount().getValue(), 40_000.0);
         // lineitem's size is unknown (no metastore totalSize): reported as unknown, which the planner matches with unknown.
         assertTrue(statistics.getLastRunsStatistics().get(0).getInputTableStatistics().get(0).getOutputSize().isUnknown());
@@ -135,7 +135,7 @@ public class TestSampleStatsProvider
     @Test
     public void testOnlyGroupsOnTheSampleKeyAreEstimated()
     {
-        SampleStatsProvider provider = provider(new HashSet<>(Arrays.asList("AggregationNode", "FilterNode", "ProjectNode")), null);
+        SampleStatsProvider provider = provider(new HashSet<>(Arrays.asList("AggregationNode", "FilterNode", "ProjectNode")));
         TableScanNode lineitem = lineitem();
         VariableReferenceExpression orderKey = lineitem.getOutputVariables().get(0);
         VariableReferenceExpression quantity = lineitem.getOutputVariables().get(1);
@@ -149,8 +149,8 @@ public class TestSampleStatsProvider
     @Test
     public void testOnlyConfiguredNodeTypesAreAnswered()
     {
-        assertTrue(estimate(provider(DEFAULT_TYPES, null), parts(TupleDomain.all()), "scan").getLastRunsStatistics().isEmpty());
-        assertEquals(only(estimate(provider(Collections.singleton("TableScanNode"), null), parts(TupleDomain.all()), "scan"))
+        assertTrue(estimate(provider(DEFAULT_TYPES), parts(TupleDomain.all()), "scan").getLastRunsStatistics().isEmpty());
+        assertEquals(only(estimate(provider(Collections.singleton("TableScanNode")), parts(TupleDomain.all()), "scan"))
                 .getRowCount().getValue(), 600_000.0);
     }
 
@@ -158,7 +158,7 @@ public class TestSampleStatsProvider
     public void testNodeKeyedWithItsLimitIsUnwrapped()
     {
         PlanNode wrapped = new Plans.StatsEquivalentPlanNodeWithLimit(greenParts(TupleDomain.all()));
-        assertEquals(only(estimate(provider(DEFAULT_TYPES, null), wrapped, "wrapped")).getRowCount().getValue(), 60_000.0);
+        assertEquals(only(estimate(provider(DEFAULT_TYPES), wrapped, "wrapped")).getRowCount().getValue(), 60_000.0);
     }
 
     @Test
@@ -166,30 +166,12 @@ public class TestSampleStatsProvider
     {
         FilterNode regex = new FilterNode(Optional.empty(), new PlanNodeId("regex"), parts(TupleDomain.all()),
                 call("regexp_like", BOOLEAN, parts(TupleDomain.all()).getOutputVariables().get(1), constant(utf8Slice("g.*"), VARCHAR)));
-        assertTrue(estimate(provider(DEFAULT_TYPES, null), regex, "regex").getLastRunsStatistics().isEmpty());
+        assertTrue(estimate(provider(DEFAULT_TYPES), regex, "regex").getLastRunsStatistics().isEmpty());
     }
 
-    @Test
-    public void testPerturbationFileScalesOrDropsEstimates()
-            throws IOException
+    private SampleStatsProvider provider(Set<String> nodeTypes)
     {
-        Path perturbations = Files.createTempFile(samples, "perturb", ".txt");
-        SampleStatsProvider provider = provider(DEFAULT_TYPES, perturbations);
-        PlanNode green = greenParts(TupleDomain.all());
-        Files.write(perturbations, "greenhash 0.5 2\n".getBytes(StandardCharsets.UTF_8));
-        PlanStatistics scaled = only(estimate(provider, green, "greenhash-1"));
-        assertEquals(scaled.getRowCount().getValue(), 30_000.0);
-        // Rows and bytes are scaled independently.
-        assertEquals(scaled.getOutputSize().getValue(), 60_000.0 * 29 * 2);
-        Files.write(perturbations, "greenhash skip\n".getBytes(StandardCharsets.UTF_8));
-        assertTrue(estimate(provider, green, "greenhash-1").getLastRunsStatistics().isEmpty());
-        Files.write(perturbations, new byte[0]);
-        assertEquals(only(estimate(provider, green, "greenhash-1")).getRowCount().getValue(), 60_000.0);
-    }
-
-    private SampleStatsProvider provider(Set<String> nodeTypes, Path perturbations)
-    {
-        return new SampleStatsProvider(samples, null, nodeTypes, perturbations);
+        return new SampleStatsProvider(samples, null, nodeTypes);
     }
 
     private static HistoricalPlanStatistics estimate(SampleStatsProvider provider, PlanNode node, String hash)

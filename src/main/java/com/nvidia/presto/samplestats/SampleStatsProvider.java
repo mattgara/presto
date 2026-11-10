@@ -65,17 +65,11 @@ public class SampleStatsProvider
     private final Optional<Path> log;
     // Plan node classes (simple names) to answer; the planner estimates the others itself.
     private final Set<String> nodeTypes;
-    // Sensitivity tests: a file of "<hash prefix> skip" or "<hash prefix> <rows factor> <bytes factor> [confidence]"
-    // lines, reread whenever its content changes, that drops or scales the matching nodes' estimates.
-    private final Optional<Path> perturbationFile;
-    private String perturbationText = "";
-    private Map<String, String[]> perturbations = new HashMap<>();
     private final Map<String, Optional<double[]>> cache = new ConcurrentHashMap<>();
 
-    public SampleStatsProvider(Path sampleDir, Path log, Set<String> nodeTypes, Path perturbationFile)
+    public SampleStatsProvider(Path sampleDir, Path log, Set<String> nodeTypes)
     {
         this.nodeTypes = nodeTypes;
-        this.perturbationFile = Optional.ofNullable(perturbationFile);
         Properties properties = new Properties();
         try (InputStream in = Files.newInputStream(sampleDir.resolve("tables.properties"))) {
             properties.load(in);
@@ -110,69 +104,19 @@ public class SampleStatsProvider
     @Override
     public Map<PlanNodeWithHash, HistoricalPlanStatistics> getStats(List<PlanNodeWithHash> planNodesWithHash, long timeoutInMilliSeconds)
     {
-        Map<String, String[]> current = perturbations();
         Map<PlanNodeWithHash, HistoricalPlanStatistics> result = new HashMap<>();
         for (PlanNodeWithHash node : planNodesWithHash) {
             Optional<String> hash = node.getHash();
             Optional<double[]> estimate = hash.isPresent() ? cache.computeIfAbsent(hash.get(), key -> estimate(node.getPlanNode(), key)) : Optional.empty();
-            result.put(node, estimate.isPresent() ? statistics(estimate.get(), perturbation(current, hash.get())) : NONE);
+            result.put(node, estimate.isPresent() ? statistics(estimate.get()) : NONE);
         }
         return result;
     }
 
-    private synchronized Map<String, String[]> perturbations()
-    {
-        if (!perturbationFile.isPresent()) {
-            return perturbations;
-        }
-        String text;
-        try {
-            text = Files.isRegularFile(perturbationFile.get()) ? new String(Files.readAllBytes(perturbationFile.get()), StandardCharsets.UTF_8) : "";
-        }
-        catch (IOException e) {
-            text = "";
-        }
-        if (!text.equals(perturbationText)) {
-            Map<String, String[]> parsed = new HashMap<>();
-            for (String line : text.split("\n")) {
-                String[] fields = line.trim().split("\\s+");
-                if (fields.length >= 2) {
-                    parsed.put(fields[0], fields);
-                }
-            }
-            perturbationText = text;
-            perturbations = parsed;
-            write("perturbations: " + text.replace('\n', ';'));
-        }
-        return perturbations;
-    }
-
-    private static Optional<String[]> perturbation(Map<String, String[]> perturbations, String hash)
-    {
-        for (Map.Entry<String, String[]> entry : perturbations.entrySet()) {
-            if (hash.startsWith(entry.getKey())) {
-                return Optional.of(entry.getValue());
-            }
-        }
-        return Optional.empty();
-    }
-
     // estimate = {rows, bytes, input rows, input bytes}
-    private static HistoricalPlanStatistics statistics(double[] estimate, Optional<String[]> perturbation)
+    private static HistoricalPlanStatistics statistics(double[] estimate)
     {
-        double rows = estimate[0];
-        double bytes = estimate[1];
-        double confidence = 1.0;
-        if (perturbation.isPresent()) {
-            String[] fields = perturbation.get();
-            if (fields[1].equals("skip")) {
-                return NONE;
-            }
-            rows *= Double.parseDouble(fields[1]);
-            bytes *= fields.length > 2 ? Double.parseDouble(fields[2]) : 1;
-            confidence = fields.length > 3 ? Double.parseDouble(fields[3]) : confidence;
-        }
-        PlanStatistics statistics = new PlanStatistics(Estimate.of(rows), Estimate.of(bytes), confidence,
+        PlanStatistics statistics = new PlanStatistics(Estimate.of(estimate[0]), Estimate.of(estimate[1]), 1.0,
                 JoinNodeStatistics.empty(), TableWriterNodeStatistics.empty(), PartialAggregationStatistics.empty());
         // The planner matches these against the table's current statistics; an unknown size (NaN) matches unknown.
         PlanStatistics input = new PlanStatistics(Estimate.estimateFromDouble(estimate[2]), Estimate.estimateFromDouble(estimate[3]), 1.0,
