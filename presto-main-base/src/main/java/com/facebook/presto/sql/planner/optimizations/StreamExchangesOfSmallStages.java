@@ -23,10 +23,14 @@ import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.plan.AggregationNode;
 import com.facebook.presto.spi.plan.JoinNode;
 import com.facebook.presto.spi.plan.MarkDistinctNode;
+import com.facebook.presto.spi.plan.Partitioning;
+import com.facebook.presto.spi.plan.PartitioningScheme;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.facebook.presto.spi.plan.SemiJoinNode;
+import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.plan.TableWriterNode;
 import com.facebook.presto.spi.plan.WindowNode;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.plan.ExchangeNode;
@@ -46,8 +50,11 @@ import static com.facebook.presto.execution.QueryManagerConfig.ExchangeMateriali
 import static com.facebook.presto.spi.plan.AggregationNode.Step.FINAL;
 import static com.facebook.presto.spi.plan.AggregationNode.Step.SINGLE;
 import static com.facebook.presto.spi.plan.JoinDistributionType.REPLICATED;
+import static com.facebook.presto.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Scope.REMOTE_MATERIALIZED;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Scope.REMOTE_STREAMING;
+import static com.facebook.presto.sql.planner.plan.ExchangeNode.Type.REPARTITION;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -57,7 +64,9 @@ import static java.util.Objects.requireNonNull;
  * part of the plan between remote exchanges. Its memory is the state of its operators: join and semi join build
  * sides, grouped final aggregations, and the inputs of window, row number and mark distinct. The partitioned part
  * is divided among the workers, the replicated part is not. A stage without an estimate keeps its exchanges
- * materialized.
+ * materialized. The exchanges streamed into a stage are also partitioned as without materialization (system hash
+ * partitioning) when all of the stage's repartitioning inputs stream and the stage neither reads nor writes a table,
+ * whose connector partitioning the stage could depend on.
  */
 public class StreamExchangesOfSmallStages
         implements PlanOptimizer
@@ -95,11 +104,12 @@ public class StreamExchangesOfSmallStages
                 taskCountEstimator.estimateHashedTaskCount(session),
                 getExchangeMaterializationMemoryThreshold(session).toBytes());
         Set<PlanNodeId> streamed = new HashSet<>();
-        stageMemory.collectExchangesToStream(plan, streamed);
+        Set<PlanNodeId> systemPartitioned = new HashSet<>();
+        stageMemory.collectExchangesToStream(plan, streamed, systemPartitioned);
         if (streamed.isEmpty()) {
             return PlanOptimizerResult.optimizerResult(plan, false);
         }
-        return PlanOptimizerResult.optimizerResult(SimplePlanRewriter.rewriteWith(new Streamer(streamed), plan), true);
+        return PlanOptimizerResult.optimizerResult(SimplePlanRewriter.rewriteWith(new Streamer(streamed, systemPartitioned), plan), true);
     }
 
     private static class StageMemory
@@ -116,11 +126,12 @@ public class StreamExchangesOfSmallStages
         }
 
         // Decides for the stage rooted at stageRoot, then for the stages that feed it.
-        private void collectExchangesToStream(PlanNode stageRoot, Set<PlanNodeId> streamed)
+        private void collectExchangesToStream(PlanNode stageRoot, Set<PlanNodeId> streamed, Set<PlanNodeId> systemPartitioned)
         {
             List<ExchangeNode> inputs = new ArrayList<>();
             double partitionedBytes = 0;
             double replicatedBytes = 0;
+            boolean usesTable = false;
             Deque<PlanNode> pending = new ArrayDeque<>();
             pending.push(stageRoot);
             while (!pending.isEmpty()) {
@@ -129,6 +140,7 @@ public class StreamExchangesOfSmallStages
                     inputs.add((ExchangeNode) node);
                     continue;
                 }
+                usesTable |= node instanceof TableScanNode || node instanceof TableWriterNode;
                 if (isReplicated(node)) {
                     replicatedBytes += stateBytes(node);
                 }
@@ -142,8 +154,14 @@ public class StreamExchangesOfSmallStages
                 inputs.stream()
                         .filter(input -> input.getScope() == REMOTE_MATERIALIZED)
                         .forEach(input -> streamed.add(input.getId()));
+                List<ExchangeNode> repartitions = inputs.stream()
+                        .filter(input -> input.getType() == REPARTITION)
+                        .collect(toImmutableList());
+                if (!usesTable && repartitions.stream().allMatch(input -> input.getScope() == REMOTE_MATERIALIZED)) {
+                    repartitions.forEach(input -> systemPartitioned.add(input.getId()));
+                }
             }
-            inputs.forEach(input -> input.getSources().forEach(source -> collectExchangesToStream(source, streamed)));
+            inputs.forEach(input -> input.getSources().forEach(source -> collectExchangesToStream(source, streamed, systemPartitioned)));
         }
 
         private double stateBytes(PlanNode node)
@@ -186,10 +204,12 @@ public class StreamExchangesOfSmallStages
             extends SimplePlanRewriter<Void>
     {
         private final Set<PlanNodeId> streamed;
+        private final Set<PlanNodeId> systemPartitioned;
 
-        private Streamer(Set<PlanNodeId> streamed)
+        private Streamer(Set<PlanNodeId> streamed, Set<PlanNodeId> systemPartitioned)
         {
             this.streamed = requireNonNull(streamed, "streamed is null");
+            this.systemPartitioned = requireNonNull(systemPartitioned, "systemPartitioned is null");
         }
 
         @Override
@@ -205,11 +225,23 @@ public class StreamExchangesOfSmallStages
                     rewritten.getStatsEquivalentPlanNode(),
                     rewritten.getType(),
                     REMOTE_STREAMING,
-                    rewritten.getPartitioningScheme(),
+                    systemPartitioned.contains(node.getId()) ? withSystemPartitioning(rewritten.getPartitioningScheme()) : rewritten.getPartitioningScheme(),
                     rewritten.getSources(),
                     rewritten.getInputs(),
                     rewritten.isEnsureSourceOrdering(),
                     rewritten.getOrderingScheme());
+        }
+
+        private static PartitioningScheme withSystemPartitioning(PartitioningScheme scheme)
+        {
+            return new PartitioningScheme(
+                    new Partitioning(FIXED_HASH_DISTRIBUTION, scheme.getPartitioning().getArguments()),
+                    scheme.getOutputLayout(),
+                    scheme.getHashColumn(),
+                    scheme.isReplicateNullsAndAny(),
+                    scheme.isScaleWriters(),
+                    scheme.getEncoding(),
+                    scheme.getBucketToPartition());
         }
     }
 }
