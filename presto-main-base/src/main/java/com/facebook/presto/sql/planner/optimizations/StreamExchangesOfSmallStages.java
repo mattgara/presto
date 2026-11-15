@@ -55,6 +55,7 @@ import static com.facebook.presto.sql.planner.plan.ExchangeNode.Scope.REMOTE_MAT
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Scope.REMOTE_STREAMING;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Type.REPARTITION;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.lang.Double.isNaN;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -62,11 +63,11 @@ import static java.util.Objects.requireNonNull;
  * AddExchanges materializes the same exchanges as ALL. This optimizer then streams the materialized exchanges into
  * every stage whose estimated memory per worker is at most exchange_materialization_memory_threshold. A stage is the
  * part of the plan between remote exchanges. Its memory is the state of its operators: join and semi join build
- * sides, grouped final aggregations, and the inputs of window, row number and mark distinct. The partitioned part
- * is divided among the workers, the replicated part is not. A stage without an estimate keeps its exchanges
- * materialized. The exchanges streamed into a stage are also partitioned as without materialization (system hash
- * partitioning) when all of the stage's repartitioning inputs stream and the stage neither reads nor writes a table,
- * whose connector partitioning the stage could depend on.
+ * sides, grouped final aggregations (bounded by their input when their output has no estimate), and the inputs of
+ * window, row number and mark distinct. The partitioned part is divided among the workers, the replicated part is
+ * not. A stage without an estimate keeps its exchanges materialized. The exchanges streamed into a stage are also
+ * partitioned as without materialization (system hash partitioning) when all of the stage's repartitioning inputs
+ * stream and the stage neither reads nor writes a table, whose connector partitioning the stage could depend on.
  */
 public class StreamExchangesOfSmallStages
         implements PlanOptimizer
@@ -175,7 +176,12 @@ public class StreamExchangesOfSmallStages
             if (node instanceof AggregationNode) {
                 AggregationNode aggregation = (AggregationNode) node;
                 boolean holdsGroups = (aggregation.getStep() == FINAL || aggregation.getStep() == SINGLE) && !aggregation.getGroupingKeys().isEmpty();
-                return holdsGroups ? outputBytes(aggregation) : 0;
+                if (!holdsGroups) {
+                    return 0;
+                }
+                // An aggregation holds at most one group per input row, which bounds a missing estimate.
+                double groups = outputBytes(aggregation);
+                return isNaN(groups) ? outputBytes(aggregation.getSource()) : groups;
             }
             if (node instanceof WindowNode || node instanceof RowNumberNode || node instanceof MarkDistinctNode) {
                 return outputBytes(node.getSources().get(0));

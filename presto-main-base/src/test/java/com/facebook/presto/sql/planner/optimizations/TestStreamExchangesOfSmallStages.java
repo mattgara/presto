@@ -83,6 +83,14 @@ public class TestStreamExchangesOfSmallStages
         assertEquals(exchanges(distributedPlan(sql, session(AUTOMATIC.name(), "1TB")), REMOTE_MATERIALIZED).size(), 2);
     }
 
+    @Test
+    public void testBoundsAnAggregationWithoutEstimateByItsInput()
+    {
+        // substr() has no distinct-value estimate, so the aggregation's output is unknown; it holds at most its input.
+        String sql = "SELECT substr(c.name, 1, 3), count(*) FROM orders o JOIN customer c ON o.custkey = c.custkey GROUP BY 1";
+        assertEquals(exchanges(distributedPlan(sql, session(AUTOMATIC.name(), "1TB")), REMOTE_MATERIALIZED).size(), 0);
+    }
+
     private Plan distributedPlan(String sql, Session session)
     {
         return plan(sql, OPTIMIZED_AND_VALIDATED, false, session);
