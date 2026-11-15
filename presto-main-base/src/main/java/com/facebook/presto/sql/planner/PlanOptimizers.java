@@ -230,6 +230,7 @@ import com.facebook.presto.sql.planner.optimizations.SimplifyPlanWithEmptyInput;
 import com.facebook.presto.sql.planner.optimizations.SortMergeJoinOptimizer;
 import com.facebook.presto.sql.planner.optimizations.SortedExchangeRule;
 import com.facebook.presto.sql.planner.optimizations.StatsRecordingPlanOptimizer;
+import com.facebook.presto.sql.planner.optimizations.StreamExchangesOfSmallStages;
 import com.facebook.presto.sql.planner.optimizations.TransformQuantifiedComparisonApplyToLateralJoin;
 import com.facebook.presto.sql.planner.optimizations.UnaliasSymbolReferences;
 import com.facebook.presto.sql.planner.optimizations.WindowFilterPushDown;
@@ -1125,6 +1126,7 @@ public class PlanOptimizers
             builder.add(new CteProjectionAndPredicatePushDown(metadata, expressionOptimizerManager)); // must run before PhysicalCteOptimizer
             builder.add(new PhysicalCteOptimizer(metadata)); // Must run before AddExchanges
             builder.add(new StatsRecordingPlanOptimizer(optimizerStats, new AddExchanges(metadata, partitioningProviderManager, featuresConfig.isNativeExecutionEnabled())));
+            builder.add(new StreamExchangesOfSmallStages(statsCalculator, taskCountEstimator));
             builder.add(new StatsRecordingPlanOptimizer(optimizerStats, new AddExchangesForSingleNodeExecution(metadata)));
         }
 

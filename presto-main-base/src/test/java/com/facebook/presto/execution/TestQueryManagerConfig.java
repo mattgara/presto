@@ -23,6 +23,7 @@ import org.testng.annotations.Test;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+import static com.facebook.airlift.units.DataSize.Unit.GIGABYTE;
 import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.airlift.units.DataSize.Unit.PETABYTE;
 import static com.facebook.airlift.units.DataSize.Unit.TERABYTE;
@@ -57,6 +58,7 @@ public class TestQueryManagerConfig
                 .setPartitioningProviderCatalog("system")
                 .setCtePartitioningProviderCatalog("system")
                 .setExchangeMaterializationStrategy(ExchangeMaterializationStrategy.NONE)
+                .setExchangeMaterializationMemoryThreshold(new DataSize(1, GIGABYTE))
                 .setQueryManagerExecutorPoolSize(5)
                 .setRemoteTaskMinErrorDuration(new Duration(5, TimeUnit.MINUTES))
                 .setRemoteTaskMaxErrorDuration(new Duration(5, TimeUnit.MINUTES))
@@ -114,6 +116,7 @@ public class TestQueryManagerConfig
                 .put("query.hash-partition-count", "16")
                 .put("query.partitioning-provider-catalog", "hive")
                 .put("query.exchange-materialization-strategy", "ALL")
+                .put("query.exchange-materialization-memory-threshold", "24GB")
                 .put("query.manager-executor-pool-size", "11")
                 .put("query.remote-task.min-error-duration", "30s")
                 .put("query.remote-task.max-error-duration", "60s")
@@ -170,6 +173,7 @@ public class TestQueryManagerConfig
                 .setPartitioningProviderCatalog("hive")
                 .setCtePartitioningProviderCatalog("hive")
                 .setExchangeMaterializationStrategy(ExchangeMaterializationStrategy.ALL)
+                .setExchangeMaterializationMemoryThreshold(new DataSize(24, GIGABYTE))
                 .setQueryManagerExecutorPoolSize(11)
                 .setRemoteTaskMinErrorDuration(new Duration(60, SECONDS))
                 .setRemoteTaskMaxErrorDuration(new Duration(60, SECONDS))

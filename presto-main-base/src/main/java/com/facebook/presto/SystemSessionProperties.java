@@ -114,6 +114,7 @@ public final class SystemSessionProperties
     public static final String CTE_PARTITIONING_PROVIDER_CATALOG = "cte_partitioning_provider_catalog";
     public static final String EXCHANGE_MATERIALIZATION_STRATEGY = "exchange_materialization_strategy";
     public static final String USE_STREAMING_EXCHANGE_FOR_MARK_DISTINCT = "use_stream_exchange_for_mark_distinct";
+    public static final String EXCHANGE_MATERIALIZATION_MEMORY_THRESHOLD = "exchange_materialization_memory_threshold";
     public static final String GROUPED_EXECUTION = "grouped_execution";
     public static final String RECOVERABLE_GROUPED_EXECUTION = "recoverable_grouped_execution";
     public static final String PARTITION_AWARE_GROUPED_EXECUTION = "partition_aware_grouped_execution";
@@ -568,6 +569,11 @@ public final class SystemSessionProperties
                         false,
                         value -> ExchangeMaterializationStrategy.valueOf(((String) value).toUpperCase()),
                         ExchangeMaterializationStrategy::name),
+                dataSizeProperty(
+                        EXCHANGE_MATERIALIZATION_MEMORY_THRESHOLD,
+                        "With the AUTOMATIC exchange materialization strategy, materialize the exchanges into a stage only when the stage's estimated memory per worker exceeds this size",
+                        queryManagerConfig.getExchangeMaterializationMemoryThreshold(),
+                        false),
                 booleanProperty(
                         USE_STREAMING_EXCHANGE_FOR_MARK_DISTINCT,
                         "Use streaming instead of materialization for mark distinct with materialized exchange enabled",
@@ -2665,6 +2671,11 @@ public final class SystemSessionProperties
     public static ExchangeMaterializationStrategy getExchangeMaterializationStrategy(Session session)
     {
         return session.getSystemProperty(EXCHANGE_MATERIALIZATION_STRATEGY, ExchangeMaterializationStrategy.class);
+    }
+
+    public static DataSize getExchangeMaterializationMemoryThreshold(Session session)
+    {
+        return session.getSystemProperty(EXCHANGE_MATERIALIZATION_MEMORY_THRESHOLD, DataSize.class);
     }
 
     public static boolean isUseStreamingExchangeForMarkDistinctEnabled(Session session)

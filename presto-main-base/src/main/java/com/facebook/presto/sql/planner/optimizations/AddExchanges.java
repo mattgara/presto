@@ -1777,6 +1777,7 @@ public class AddExchanges
 
             switch (exchangeMaterializationStrategy) {
                 case ALL:
+                case AUTOMATIC:
                     return REMOTE_MATERIALIZED;
                 case NONE:
                     return REMOTE_STREAMING;

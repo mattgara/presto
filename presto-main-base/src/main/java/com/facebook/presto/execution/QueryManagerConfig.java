@@ -29,6 +29,7 @@ import jakarta.validation.constraints.NotNull;
 
 import java.util.concurrent.TimeUnit;
 
+import static com.facebook.airlift.units.DataSize.Unit.GIGABYTE;
 import static com.facebook.airlift.units.DataSize.Unit.PETABYTE;
 import static com.facebook.airlift.units.DataSize.Unit.TERABYTE;
 import static com.facebook.presto.common.RuntimeStats.DEFAULT_QUERY_TRACE_MAX_EVENTS;
@@ -53,6 +54,7 @@ public class QueryManagerConfig
     private String ctePartitioningProviderCatalog = GlobalSystemConnector.NAME;
     private ExchangeMaterializationStrategy exchangeMaterializationStrategy = ExchangeMaterializationStrategy.NONE;
     private boolean useStreamingExchangeForMarkDistinct;
+    private DataSize exchangeMaterializationMemoryThreshold = new DataSize(1, GIGABYTE);
     private boolean enableWorkerIsolation;
     private Duration minQueryExpireAge = new Duration(15, TimeUnit.MINUTES);
     private int maxQueryHistory = 100;
@@ -231,6 +233,20 @@ public class QueryManagerConfig
     public QueryManagerConfig setExchangeMaterializationStrategy(ExchangeMaterializationStrategy exchangeMaterializationStrategy)
     {
         this.exchangeMaterializationStrategy = exchangeMaterializationStrategy;
+        return this;
+    }
+
+    @NotNull
+    public DataSize getExchangeMaterializationMemoryThreshold()
+    {
+        return exchangeMaterializationMemoryThreshold;
+    }
+
+    @Config("query.exchange-materialization-memory-threshold")
+    @ConfigDescription("With the AUTOMATIC exchange materialization strategy, materialize the exchanges into a stage only when the stage's estimated memory per worker exceeds this size")
+    public QueryManagerConfig setExchangeMaterializationMemoryThreshold(DataSize exchangeMaterializationMemoryThreshold)
+    {
+        this.exchangeMaterializationMemoryThreshold = exchangeMaterializationMemoryThreshold;
         return this;
     }
 
@@ -819,5 +835,6 @@ public class QueryManagerConfig
     {
         NONE,
         ALL,
+        AUTOMATIC,
     }
 }
