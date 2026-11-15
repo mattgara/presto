@@ -14,16 +14,19 @@
 package com.facebook.presto.sql.planner.optimizations;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.cost.CachingStatsProvider;
 import com.facebook.presto.cost.StatsCalculator;
 import com.facebook.presto.cost.StatsProvider;
 import com.facebook.presto.cost.TaskCountEstimator;
+import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.spi.VariableAllocator;
 import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.plan.AggregationNode;
 import com.facebook.presto.spi.plan.JoinNode;
 import com.facebook.presto.spi.plan.MarkDistinctNode;
 import com.facebook.presto.spi.plan.Partitioning;
+import com.facebook.presto.spi.plan.PartitioningHandle;
 import com.facebook.presto.spi.plan.PartitioningScheme;
 import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.spi.plan.PlanNodeId;
@@ -32,6 +35,7 @@ import com.facebook.presto.spi.plan.SemiJoinNode;
 import com.facebook.presto.spi.plan.TableScanNode;
 import com.facebook.presto.spi.plan.TableWriterNode;
 import com.facebook.presto.spi.plan.WindowNode;
+import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.plan.ExchangeNode;
 import com.facebook.presto.sql.planner.plan.RowNumberNode;
@@ -40,12 +44,15 @@ import com.facebook.presto.sql.planner.plan.SimplePlanRewriter;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static com.facebook.presto.SystemSessionProperties.getExchangeMaterializationMemoryThreshold;
 import static com.facebook.presto.SystemSessionProperties.getExchangeMaterializationStrategy;
+import static com.facebook.presto.SystemSessionProperties.getHashPartitionCount;
 import static com.facebook.presto.execution.QueryManagerConfig.ExchangeMaterializationStrategy.AUTOMATIC;
 import static com.facebook.presto.spi.plan.AggregationNode.Step.FINAL;
 import static com.facebook.presto.spi.plan.AggregationNode.Step.SINGLE;
@@ -68,15 +75,19 @@ import static java.util.Objects.requireNonNull;
  * not. A stage without an estimate keeps its exchanges materialized. The exchanges streamed into a stage are also
  * partitioned as without materialization (system hash partitioning) when all of the stage's repartitioning inputs
  * stream and the stage neither reads nor writes a table, whose connector partitioning the stage could depend on.
+ * Under the same conditions, a stage that stays materialized gets the fewest buckets (a power of two, at least one
+ * per worker, at most hash_partition_count) in which a bucket's share of the state fits the threshold.
  */
 public class StreamExchangesOfSmallStages
         implements PlanOptimizer
 {
+    private final Metadata metadata;
     private final StatsCalculator statsCalculator;
     private final TaskCountEstimator taskCountEstimator;
 
-    public StreamExchangesOfSmallStages(StatsCalculator statsCalculator, TaskCountEstimator taskCountEstimator)
+    public StreamExchangesOfSmallStages(Metadata metadata, StatsCalculator statsCalculator, TaskCountEstimator taskCountEstimator)
     {
+        this.metadata = requireNonNull(metadata, "metadata is null");
         this.statsCalculator = requireNonNull(statsCalculator, "statsCalculator is null");
         this.taskCountEstimator = requireNonNull(taskCountEstimator, "taskCountEstimator is null");
     }
@@ -103,14 +114,16 @@ public class StreamExchangesOfSmallStages
         StageMemory stageMemory = new StageMemory(
                 new CachingStatsProvider(statsCalculator, session, types),
                 taskCountEstimator.estimateHashedTaskCount(session),
-                getExchangeMaterializationMemoryThreshold(session).toBytes());
+                getExchangeMaterializationMemoryThreshold(session).toBytes(),
+                getHashPartitionCount(session));
         Set<PlanNodeId> streamed = new HashSet<>();
         Set<PlanNodeId> systemPartitioned = new HashSet<>();
-        stageMemory.collectExchangesToStream(plan, streamed, systemPartitioned);
-        if (streamed.isEmpty()) {
+        Map<PlanNodeId, Integer> buckets = new HashMap<>();
+        stageMemory.collectExchangesToStream(plan, streamed, systemPartitioned, buckets);
+        if (streamed.isEmpty() && buckets.isEmpty()) {
             return PlanOptimizerResult.optimizerResult(plan, false);
         }
-        return PlanOptimizerResult.optimizerResult(SimplePlanRewriter.rewriteWith(new Streamer(streamed, systemPartitioned), plan), true);
+        return PlanOptimizerResult.optimizerResult(SimplePlanRewriter.rewriteWith(new Streamer(metadata, session, streamed, systemPartitioned, buckets), plan), true);
     }
 
     private static class StageMemory
@@ -118,16 +131,18 @@ public class StreamExchangesOfSmallStages
         private final StatsProvider statsProvider;
         private final int workers;
         private final double threshold;
+        private final int maxBuckets;
 
-        private StageMemory(StatsProvider statsProvider, int workers, double threshold)
+        private StageMemory(StatsProvider statsProvider, int workers, double threshold, int maxBuckets)
         {
             this.statsProvider = requireNonNull(statsProvider, "statsProvider is null");
             this.workers = workers;
             this.threshold = threshold;
+            this.maxBuckets = maxBuckets;
         }
 
         // Decides for the stage rooted at stageRoot, then for the stages that feed it.
-        private void collectExchangesToStream(PlanNode stageRoot, Set<PlanNodeId> streamed, Set<PlanNodeId> systemPartitioned)
+        private void collectExchangesToStream(PlanNode stageRoot, Set<PlanNodeId> streamed, Set<PlanNodeId> systemPartitioned, Map<PlanNodeId, Integer> buckets)
         {
             List<ExchangeNode> inputs = new ArrayList<>();
             double partitionedBytes = 0;
@@ -150,19 +165,31 @@ public class StreamExchangesOfSmallStages
                 }
                 node.getSources().forEach(pending::push);
             }
+            List<ExchangeNode> repartitions = inputs.stream()
+                    .filter(input -> input.getType() == REPARTITION)
+                    .collect(toImmutableList());
+            boolean repartitionable = !usesTable && !repartitions.isEmpty() && repartitions.stream().allMatch(input -> input.getScope() == REMOTE_MATERIALIZED);
             // An unknown estimate is NaN, which fails the comparison.
             if (partitionedBytes / workers + replicatedBytes <= threshold) {
                 inputs.stream()
                         .filter(input -> input.getScope() == REMOTE_MATERIALIZED)
                         .forEach(input -> streamed.add(input.getId()));
-                List<ExchangeNode> repartitions = inputs.stream()
-                        .filter(input -> input.getType() == REPARTITION)
-                        .collect(toImmutableList());
-                if (!usesTable && repartitions.stream().allMatch(input -> input.getScope() == REMOTE_MATERIALIZED)) {
+                if (repartitionable) {
                     repartitions.forEach(input -> systemPartitioned.add(input.getId()));
                 }
             }
-            inputs.forEach(input -> input.getSources().forEach(source -> collectExchangesToStream(source, streamed, systemPartitioned)));
+            else if (repartitionable && repartitions.stream().allMatch(input -> input.getPartitioningScheme().getPartitioning().getHandle().getConnectorId().isPresent())) {
+                // One bucket per lifespan: a worker holds the partitioned state of one bucket at a time. Only a
+                // connector partitioning has a bucket count to choose.
+                double needed = Math.ceil(partitionedBytes / (threshold - replicatedBytes));
+                if (replicatedBytes < threshold && needed < maxBuckets) {
+                    int count = Math.max(workers, Integer.highestOneBit((int) Math.max(1, needed - 1)) << 1);
+                    if (count < maxBuckets) {
+                        repartitions.forEach(input -> buckets.put(input.getId(), count));
+                    }
+                }
+            }
+            inputs.forEach(input -> input.getSources().forEach(source -> collectExchangesToStream(source, streamed, systemPartitioned, buckets)));
         }
 
         private double stateBytes(PlanNode node)
@@ -209,39 +236,73 @@ public class StreamExchangesOfSmallStages
     private static class Streamer
             extends SimplePlanRewriter<Void>
     {
+        private final Metadata metadata;
+        private final Session session;
         private final Set<PlanNodeId> streamed;
         private final Set<PlanNodeId> systemPartitioned;
+        private final Map<PlanNodeId, Integer> buckets;
 
-        private Streamer(Set<PlanNodeId> streamed, Set<PlanNodeId> systemPartitioned)
+        private Streamer(Metadata metadata, Session session, Set<PlanNodeId> streamed, Set<PlanNodeId> systemPartitioned, Map<PlanNodeId, Integer> buckets)
         {
+            this.metadata = requireNonNull(metadata, "metadata is null");
+            this.session = requireNonNull(session, "session is null");
             this.streamed = requireNonNull(streamed, "streamed is null");
             this.systemPartitioned = requireNonNull(systemPartitioned, "systemPartitioned is null");
+            this.buckets = requireNonNull(buckets, "buckets is null");
         }
 
         @Override
         public PlanNode visitExchange(ExchangeNode node, RewriteContext<Void> context)
         {
             ExchangeNode rewritten = (ExchangeNode) context.defaultRewrite(node);
+            Integer bucketCount = buckets.get(node.getId());
+            if (bucketCount != null) {
+                return withPartitioningScheme(rewritten, rewritten.getScope(), withBuckets(rewritten.getPartitioningScheme(), bucketCount));
+            }
             if (!streamed.contains(node.getId())) {
                 return rewritten;
             }
-            return new ExchangeNode(
-                    rewritten.getSourceLocation(),
-                    rewritten.getId(),
-                    rewritten.getStatsEquivalentPlanNode(),
-                    rewritten.getType(),
+            return withPartitioningScheme(
+                    rewritten,
                     REMOTE_STREAMING,
-                    systemPartitioned.contains(node.getId()) ? withSystemPartitioning(rewritten.getPartitioningScheme()) : rewritten.getPartitioningScheme(),
-                    rewritten.getSources(),
-                    rewritten.getInputs(),
-                    rewritten.isEnsureSourceOrdering(),
-                    rewritten.getOrderingScheme());
+                    systemPartitioned.contains(node.getId()) ? withSystemPartitioning(rewritten.getPartitioningScheme()) : rewritten.getPartitioningScheme());
+        }
+
+        private static ExchangeNode withPartitioningScheme(ExchangeNode node, ExchangeNode.Scope scope, PartitioningScheme scheme)
+        {
+            return new ExchangeNode(
+                    node.getSourceLocation(),
+                    node.getId(),
+                    node.getStatsEquivalentPlanNode(),
+                    node.getType(),
+                    scope,
+                    scheme,
+                    node.getSources(),
+                    node.getInputs(),
+                    node.isEnsureSourceOrdering(),
+                    node.getOrderingScheme());
+        }
+
+        // The connector's exchange partitioning with 'bucketCount' buckets.
+        private PartitioningScheme withBuckets(PartitioningScheme scheme, int bucketCount)
+        {
+            Partitioning partitioning = scheme.getPartitioning();
+            List<Type> types = partitioning.getArguments().stream()
+                    .map(RowExpression::getType)
+                    .collect(toImmutableList());
+            String catalog = partitioning.getHandle().getConnectorId().get().getCatalogName();
+            return withHandle(scheme, metadata.getPartitioningHandleForExchange(session, catalog, bucketCount, types));
         }
 
         private static PartitioningScheme withSystemPartitioning(PartitioningScheme scheme)
         {
+            return withHandle(scheme, FIXED_HASH_DISTRIBUTION);
+        }
+
+        private static PartitioningScheme withHandle(PartitioningScheme scheme, PartitioningHandle handle)
+        {
             return new PartitioningScheme(
-                    new Partitioning(FIXED_HASH_DISTRIBUTION, scheme.getPartitioning().getArguments()),
+                    new Partitioning(handle, scheme.getPartitioning().getArguments()),
                     scheme.getOutputLayout(),
                     scheme.getHashColumn(),
                     scheme.isReplicateNullsAndAny(),

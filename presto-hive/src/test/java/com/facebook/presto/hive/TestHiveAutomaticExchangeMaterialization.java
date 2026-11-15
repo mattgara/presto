@@ -25,6 +25,7 @@ import java.util.List;
 
 import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_MEMORY_THRESHOLD;
 import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_STRATEGY;
+import static com.facebook.presto.SystemSessionProperties.HASH_PARTITION_COUNT;
 import static com.facebook.presto.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static com.facebook.presto.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
 import static com.facebook.presto.SystemSessionProperties.PARTITIONING_PROVIDER_CATALOG;
@@ -32,6 +33,7 @@ import static com.facebook.presto.sql.planner.SystemPartitioningHandle.FIXED_HAS
 import static com.facebook.presto.sql.planner.optimizations.PlanNodeSearcher.searchFrom;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Scope.REMOTE_MATERIALIZED;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Type.REPARTITION;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.tpch.TpchTable.CUSTOMER;
 import static io.airlift.tpch.TpchTable.ORDERS;
 import static org.testng.Assert.assertEquals;
@@ -77,6 +79,36 @@ public class TestHiveAutomaticExchangeMaterialization
             assertTrue(exchange.getPartitioningScheme().getPartitioning().getHandle().getConnectorId().isPresent());
         });
         assertQuery(session, JOIN_THEN_AGGREGATION);
+    }
+
+    @Test
+    public void testMaterializedStageGetsTheBucketsItsStateNeeds()
+    {
+        // At 5 kB the join's build side needs a few buckets, fewer than the session's 64.
+        Session session = Session.builder(automatic("5kB")).setSystemProperty(HASH_PARTITION_COUNT, "64").build();
+        List<ExchangeNode> materialized = materialized(plan(JOIN_THEN_AGGREGATION, session));
+        assertFalse(materialized.isEmpty());
+        materialized.forEach(exchange -> {
+            int buckets = bucketCount(exchange);
+            assertTrue(buckets >= 2 && buckets < 64 && Integer.bitCount(buckets) == 1, "buckets " + buckets);
+        });
+        assertQuery(session, JOIN_THEN_AGGREGATION);
+
+        // A stage that needs more buckets than the session allows gets that many.
+        Session capped = Session.builder(automatic("1B")).setSystemProperty(HASH_PARTITION_COUNT, "16").build();
+        materialized(plan(JOIN_THEN_AGGREGATION, capped)).forEach(exchange -> assertEquals(bucketCount(exchange), 16));
+    }
+
+    private static List<ExchangeNode> materialized(Plan plan)
+    {
+        return remoteRepartitions(plan).stream()
+                .filter(exchange -> exchange.getScope() == REMOTE_MATERIALIZED)
+                .collect(toImmutableList());
+    }
+
+    private static int bucketCount(ExchangeNode exchange)
+    {
+        return ((HivePartitioningHandle) exchange.getPartitioningScheme().getPartitioning().getHandle().getConnectorHandle()).getBucketCount();
     }
 
     private static List<ExchangeNode> remoteRepartitions(Plan plan)

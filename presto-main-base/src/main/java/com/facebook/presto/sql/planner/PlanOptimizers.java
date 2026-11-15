@@ -1126,7 +1126,7 @@ public class PlanOptimizers
             builder.add(new CteProjectionAndPredicatePushDown(metadata, expressionOptimizerManager)); // must run before PhysicalCteOptimizer
             builder.add(new PhysicalCteOptimizer(metadata)); // Must run before AddExchanges
             builder.add(new StatsRecordingPlanOptimizer(optimizerStats, new AddExchanges(metadata, partitioningProviderManager, featuresConfig.isNativeExecutionEnabled())));
-            builder.add(new StreamExchangesOfSmallStages(statsCalculator, taskCountEstimator));
+            builder.add(new StreamExchangesOfSmallStages(metadata, statsCalculator, taskCountEstimator));
             builder.add(new StatsRecordingPlanOptimizer(optimizerStats, new AddExchangesForSingleNodeExecution(metadata)));
         }
 
