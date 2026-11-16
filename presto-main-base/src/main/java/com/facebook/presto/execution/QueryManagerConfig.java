@@ -23,6 +23,8 @@ import com.facebook.airlift.units.MinDataSize;
 import com.facebook.airlift.units.MinDuration;
 import com.facebook.presto.connector.system.GlobalSystemConnector;
 import com.facebook.presto.spi.api.Experimental;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
@@ -55,6 +57,7 @@ public class QueryManagerConfig
     private ExchangeMaterializationStrategy exchangeMaterializationStrategy = ExchangeMaterializationStrategy.NONE;
     private boolean useStreamingExchangeForMarkDistinct;
     private DataSize exchangeMaterializationMemoryThreshold = new DataSize(1, GIGABYTE);
+    private double exchangeMaterializationBucketMemoryFraction = 1.0;
     private boolean enableWorkerIsolation;
     private Duration minQueryExpireAge = new Duration(15, TimeUnit.MINUTES);
     private int maxQueryHistory = 100;
@@ -247,6 +250,21 @@ public class QueryManagerConfig
     public QueryManagerConfig setExchangeMaterializationMemoryThreshold(DataSize exchangeMaterializationMemoryThreshold)
     {
         this.exchangeMaterializationMemoryThreshold = exchangeMaterializationMemoryThreshold;
+        return this;
+    }
+
+    @DecimalMin(value = "0", inclusive = false)
+    @DecimalMax("1")
+    public double getExchangeMaterializationBucketMemoryFraction()
+    {
+        return exchangeMaterializationBucketMemoryFraction;
+    }
+
+    @Config("query.exchange-materialization-bucket-memory-fraction")
+    @ConfigDescription("With the AUTOMATIC exchange materialization strategy, give a stage whose exchanges are materialized enough buckets that one bucket's estimated memory per worker is at most this fraction of the memory threshold")
+    public QueryManagerConfig setExchangeMaterializationBucketMemoryFraction(double exchangeMaterializationBucketMemoryFraction)
+    {
+        this.exchangeMaterializationBucketMemoryFraction = exchangeMaterializationBucketMemoryFraction;
         return this;
     }
 

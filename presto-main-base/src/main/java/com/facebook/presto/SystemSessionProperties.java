@@ -115,6 +115,7 @@ public final class SystemSessionProperties
     public static final String EXCHANGE_MATERIALIZATION_STRATEGY = "exchange_materialization_strategy";
     public static final String USE_STREAMING_EXCHANGE_FOR_MARK_DISTINCT = "use_stream_exchange_for_mark_distinct";
     public static final String EXCHANGE_MATERIALIZATION_MEMORY_THRESHOLD = "exchange_materialization_memory_threshold";
+    public static final String EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION = "exchange_materialization_bucket_memory_fraction";
     public static final String GROUPED_EXECUTION = "grouped_execution";
     public static final String RECOVERABLE_GROUPED_EXECUTION = "recoverable_grouped_execution";
     public static final String PARTITION_AWARE_GROUPED_EXECUTION = "partition_aware_grouped_execution";
@@ -574,6 +575,21 @@ public final class SystemSessionProperties
                         "With the AUTOMATIC exchange materialization strategy, materialize the exchanges into a stage only when the stage's estimated memory per worker exceeds this size",
                         queryManagerConfig.getExchangeMaterializationMemoryThreshold(),
                         false),
+                new PropertyMetadata<>(
+                        EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION,
+                        "With the AUTOMATIC exchange materialization strategy, give a stage whose exchanges are materialized enough buckets that one bucket's estimated memory per worker is at most this fraction of exchange_materialization_memory_threshold",
+                        DOUBLE,
+                        Double.class,
+                        queryManagerConfig.getExchangeMaterializationBucketMemoryFraction(),
+                        false,
+                        value -> {
+                            double fraction = ((Number) value).doubleValue();
+                            if (!(fraction > 0 && fraction <= 1)) {
+                                throw new PrestoException(INVALID_SESSION_PROPERTY, format("%s must be in (0, 1]: %s", EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION, fraction));
+                            }
+                            return fraction;
+                        },
+                        value -> value),
                 booleanProperty(
                         USE_STREAMING_EXCHANGE_FOR_MARK_DISTINCT,
                         "Use streaming instead of materialization for mark distinct with materialized exchange enabled",
@@ -2685,6 +2701,11 @@ public final class SystemSessionProperties
     public static DataSize getExchangeMaterializationMemoryThreshold(Session session)
     {
         return session.getSystemProperty(EXCHANGE_MATERIALIZATION_MEMORY_THRESHOLD, DataSize.class);
+    }
+
+    public static double getExchangeMaterializationBucketMemoryFraction(Session session)
+    {
+        return session.getSystemProperty(EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION, Double.class);
     }
 
     public static boolean isUseStreamingExchangeForMarkDistinctEnabled(Session session)

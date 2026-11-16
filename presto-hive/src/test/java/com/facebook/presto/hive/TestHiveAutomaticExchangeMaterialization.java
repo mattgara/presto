@@ -23,6 +23,7 @@ import org.testng.annotations.Test;
 
 import java.util.List;
 
+import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION;
 import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_MEMORY_THRESHOLD;
 import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_STRATEGY;
 import static com.facebook.presto.SystemSessionProperties.HASH_PARTITION_COUNT;
@@ -97,6 +98,25 @@ public class TestHiveAutomaticExchangeMaterialization
         // A stage that needs more buckets than the session allows gets that many.
         Session capped = Session.builder(automatic("1B")).setSystemProperty(HASH_PARTITION_COUNT, "16").build();
         materialized(plan(JOIN_THEN_AGGREGATION, capped)).forEach(exchange -> assertEquals(bucketCount(exchange), 16));
+    }
+
+    @Test
+    public void testBucketMemoryFractionGivesMoreBuckets()
+    {
+        // The fraction sizes the buckets of the stages the threshold materializes, so the same exchanges are
+        // materialized, each into more buckets than when a bucket may hold the whole threshold.
+        Session whole = Session.builder(automatic("5kB")).setSystemProperty(HASH_PARTITION_COUNT, "64").build();
+        Session quarter = Session.builder(whole).setSystemProperty(EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION, "0.25").build();
+        List<ExchangeNode> wholeExchanges = materialized(plan(JOIN_THEN_AGGREGATION, whole));
+        List<ExchangeNode> quarterExchanges = materialized(plan(JOIN_THEN_AGGREGATION, quarter));
+        assertFalse(wholeExchanges.isEmpty());
+        assertEquals(quarterExchanges.size(), wholeExchanges.size());
+        int wholeBuckets = bucketCount(wholeExchanges.get(0));
+        quarterExchanges.forEach(exchange -> {
+            int buckets = bucketCount(exchange);
+            assertTrue(buckets > wholeBuckets && buckets <= 64 && Integer.bitCount(buckets) == 1, "buckets " + buckets + " vs " + wholeBuckets);
+        });
+        assertQuery(quarter, JOIN_THEN_AGGREGATION);
     }
 
     private static List<ExchangeNode> materialized(Plan plan)

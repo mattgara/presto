@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static com.facebook.presto.SystemSessionProperties.getExchangeMaterializationBucketMemoryFraction;
 import static com.facebook.presto.SystemSessionProperties.getExchangeMaterializationMemoryThreshold;
 import static com.facebook.presto.SystemSessionProperties.getExchangeMaterializationStrategy;
 import static com.facebook.presto.SystemSessionProperties.getHashPartitionCount;
@@ -76,7 +77,9 @@ import static java.util.Objects.requireNonNull;
  * partitioned as without materialization (system hash partitioning) when all of the stage's repartitioning inputs
  * stream and the stage neither reads nor writes a table, whose connector partitioning the stage could depend on.
  * Under the same conditions, a stage that stays materialized gets the fewest buckets (a power of two, at least one
- * per worker, at most hash_partition_count) in which a bucket's share of the state fits the threshold.
+ * per worker, at most hash_partition_count) in which a bucket's share of the state fits
+ * exchange_materialization_bucket_memory_fraction of the threshold: GPU operators can hold several times the state
+ * they keep, so a bucket may need headroom that the decision to materialize does not.
  */
 public class StreamExchangesOfSmallStages
         implements PlanOptimizer
@@ -115,6 +118,7 @@ public class StreamExchangesOfSmallStages
                 new CachingStatsProvider(statsCalculator, session, types),
                 taskCountEstimator.estimateHashedTaskCount(session),
                 getExchangeMaterializationMemoryThreshold(session).toBytes(),
+                getExchangeMaterializationMemoryThreshold(session).toBytes() * getExchangeMaterializationBucketMemoryFraction(session),
                 getHashPartitionCount(session));
         Set<PlanNodeId> streamed = new HashSet<>();
         Set<PlanNodeId> systemPartitioned = new HashSet<>();
@@ -131,13 +135,15 @@ public class StreamExchangesOfSmallStages
         private final StatsProvider statsProvider;
         private final int workers;
         private final double threshold;
+        private final double bucketThreshold;
         private final int maxBuckets;
 
-        private StageMemory(StatsProvider statsProvider, int workers, double threshold, int maxBuckets)
+        private StageMemory(StatsProvider statsProvider, int workers, double threshold, double bucketThreshold, int maxBuckets)
         {
             this.statsProvider = requireNonNull(statsProvider, "statsProvider is null");
             this.workers = workers;
             this.threshold = threshold;
+            this.bucketThreshold = bucketThreshold;
             this.maxBuckets = maxBuckets;
         }
 
@@ -181,8 +187,8 @@ public class StreamExchangesOfSmallStages
             else if (repartitionable && repartitions.stream().allMatch(input -> input.getPartitioningScheme().getPartitioning().getHandle().getConnectorId().isPresent())) {
                 // One bucket per lifespan: a worker holds the partitioned state of one bucket at a time. Only a
                 // connector partitioning has a bucket count to choose.
-                double needed = Math.ceil(partitionedBytes / (threshold - replicatedBytes));
-                if (replicatedBytes < threshold && needed < maxBuckets) {
+                double needed = Math.ceil(partitionedBytes / (bucketThreshold - replicatedBytes));
+                if (replicatedBytes < bucketThreshold && needed < maxBuckets) {
                     int count = Math.max(workers, Integer.highestOneBit((int) Math.max(1, needed - 1)) << 1);
                     if (count < maxBuckets) {
                         repartitions.forEach(input -> buckets.put(input.getId(), count));

@@ -25,6 +25,7 @@ import org.testng.annotations.Test;
 
 import java.util.List;
 
+import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION;
 import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_MEMORY_THRESHOLD;
 import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_STRATEGY;
 import static com.facebook.presto.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
@@ -73,6 +74,11 @@ public class TestStreamExchangesOfSmallStages
         // The aggregation's input, which comes from the join, streams.
         List<ExchangeNode> streamed = exchanges(plan, REMOTE_STREAMING);
         assertEquals(streamed.stream().filter(exchange -> !searchFrom(exchange).where(JoinNode.class::isInstance).findAll().isEmpty()).count(), 1);
+        // The bucket memory fraction sizes buckets only: the same exchanges stream however small it is.
+        Session smallBuckets = Session.builder(session(AUTOMATIC.name(), "5kB")).setSystemProperty(EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION, "0.001").build();
+        Plan smallBucketsPlan = distributedPlan(JOIN_THEN_SMALL_AGGREGATION, smallBuckets);
+        assertEquals(exchanges(smallBucketsPlan, REMOTE_MATERIALIZED).size(), materialized.size());
+        assertEquals(exchanges(smallBucketsPlan, REMOTE_STREAMING).size(), streamed.size());
     }
 
     @Test
