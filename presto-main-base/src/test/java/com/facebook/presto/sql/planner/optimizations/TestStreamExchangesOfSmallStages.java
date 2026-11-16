@@ -14,7 +14,9 @@
 package com.facebook.presto.sql.planner.optimizations;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.spi.plan.JoinDistributionType;
 import com.facebook.presto.spi.plan.JoinNode;
+import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.planner.Plan;
 import com.facebook.presto.sql.planner.assertions.BasePlanTest;
 import com.facebook.presto.sql.planner.plan.ExchangeNode;
@@ -91,6 +93,23 @@ public class TestStreamExchangesOfSmallStages
         assertEquals(exchanges(distributedPlan(sql, session(AUTOMATIC.name(), "1TB")), REMOTE_MATERIALIZED).size(), 0);
     }
 
+    @Test
+    public void testReplicatesOnlyBuildsThatFitTheThreshold()
+    {
+        // Under AUTOMATIC, the cost-based choice broadcasts customer only when its 27 kB fit the threshold: every worker
+        // holds a replicated build whole, whatever the bucket count.
+        assertEquals(joinDistribution(session(AUTOMATIC.name(), "1TB", FeaturesConfig.JoinDistributionType.AUTOMATIC)), JoinDistributionType.REPLICATED);
+        assertEquals(joinDistribution(session(AUTOMATIC.name(), "5kB", FeaturesConfig.JoinDistributionType.AUTOMATIC)), JoinDistributionType.PARTITIONED);
+        // The threshold does not limit broadcasts under another strategy.
+        assertEquals(joinDistribution(session(ALL.name(), "5kB", FeaturesConfig.JoinDistributionType.AUTOMATIC)), JoinDistributionType.REPLICATED);
+    }
+
+    private JoinDistributionType joinDistribution(Session session)
+    {
+        JoinNode join = searchFrom(distributedPlan(JOIN_THEN_SMALL_AGGREGATION, session).getRoot()).where(JoinNode.class::isInstance).findOnlyElement();
+        return join.getDistributionType().orElseThrow(() -> new AssertionError("join without a distribution type"));
+    }
+
     private Plan distributedPlan(String sql, Session session)
     {
         return plan(sql, OPTIMIZED_AND_VALIDATED, false, session);
@@ -105,10 +124,15 @@ public class TestStreamExchangesOfSmallStages
 
     private static Session session(String strategy, String threshold)
     {
+        return session(strategy, threshold, PARTITIONED);
+    }
+
+    private static Session session(String strategy, String threshold, FeaturesConfig.JoinDistributionType joinDistributionType)
+    {
         return TestingSession.testSessionBuilder()
                 .setCatalog("local")
                 .setSchema("tiny")
-                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, PARTITIONED.toString())
+                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, joinDistributionType.toString())
                 .setSystemProperty(JOIN_REORDERING_STRATEGY, NONE.toString())
                 .setSystemProperty(EXCHANGE_MATERIALIZATION_STRATEGY, strategy)
                 .setSystemProperty(EXCHANGE_MATERIALIZATION_MEMORY_THRESHOLD, threshold)

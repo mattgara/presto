@@ -2611,7 +2611,16 @@ public final class SystemSessionProperties
 
     public static DataSize getJoinMaxBroadcastTableSize(Session session)
     {
-        return session.getSystemProperty(JOIN_MAX_BROADCAST_TABLE_SIZE, DataSize.class);
+        DataSize maxBroadcastTableSize = session.getSystemProperty(JOIN_MAX_BROADCAST_TABLE_SIZE, DataSize.class);
+        // Under AUTOMATIC exchange materialization a stage keeps its memory within the threshold by reading its
+        // partitioned inputs one bucket at a time, but every worker holds a replicated build whole
+        if (getExchangeMaterializationStrategy(session) == ExchangeMaterializationStrategy.AUTOMATIC) {
+            DataSize threshold = getExchangeMaterializationMemoryThreshold(session);
+            if (threshold.compareTo(maxBroadcastTableSize) < 0) {
+                return threshold;
+            }
+        }
+        return maxBroadcastTableSize;
     }
 
     public static boolean isSizeBasedJoinDistributionTypeEnabled(Session session)
