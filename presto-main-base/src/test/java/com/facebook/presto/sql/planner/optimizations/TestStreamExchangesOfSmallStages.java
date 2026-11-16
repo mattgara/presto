@@ -40,6 +40,7 @@ import static com.facebook.presto.sql.planner.plan.ExchangeNode.Scope.REMOTE_MAT
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Scope.REMOTE_STREAMING;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Type.REPARTITION;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 
 public class TestStreamExchangesOfSmallStages
@@ -49,6 +50,11 @@ public class TestStreamExchangesOfSmallStages
     private static final String JOIN_THEN_SMALL_AGGREGATION = "SELECT c.mktsegment, count(*) " +
             "FROM orders o JOIN customer c ON o.custkey = c.custkey " +
             "GROUP BY c.mktsegment";
+    // The join builds on customer's custkey (about 14 kB); the aggregation, in the stage after the join's, keeps one
+    // group per order (about 262 kB).
+    private static final String JOIN_THEN_LARGE_AGGREGATION = "SELECT o.orderkey, count(*) " +
+            "FROM orders o JOIN customer c ON o.custkey = c.custkey " +
+            "GROUP BY o.orderkey";
 
     @Test
     public void testStreamsEveryExchangeWhenEveryStageFits()
@@ -66,19 +72,31 @@ public class TestStreamExchangesOfSmallStages
     @Test
     public void testMaterializesOnlyTheExchangesOfLargeStages()
     {
-        Plan plan = distributedPlan(JOIN_THEN_SMALL_AGGREGATION, session(AUTOMATIC.name(), "5kB"));
-        // The join's inputs are materialized.
+        Plan plan = distributedPlan(JOIN_THEN_LARGE_AGGREGATION, session(AUTOMATIC.name(), "100kB"));
+        // The aggregation's input, which comes from the join, is materialized.
         List<ExchangeNode> materialized = exchanges(plan, REMOTE_MATERIALIZED);
-        assertEquals(materialized.size(), 2);
-        materialized.forEach(exchange -> assertTrue(searchFrom(exchange).where(JoinNode.class::isInstance).findAll().isEmpty()));
-        // The aggregation's input, which comes from the join, streams.
+        assertEquals(materialized.size(), 1);
+        assertFalse(searchFrom(materialized.get(0)).where(JoinNode.class::isInstance).findAll().isEmpty());
+        // The join's inputs stream.
         List<ExchangeNode> streamed = exchanges(plan, REMOTE_STREAMING);
-        assertEquals(streamed.stream().filter(exchange -> !searchFrom(exchange).where(JoinNode.class::isInstance).findAll().isEmpty()).count(), 1);
+        assertEquals(streamed.size(), 2);
+        streamed.forEach(exchange -> assertTrue(searchFrom(exchange).where(JoinNode.class::isInstance).findAll().isEmpty()));
         // The bucket memory fraction sizes buckets only: the same exchanges stream however small it is.
-        Session smallBuckets = Session.builder(session(AUTOMATIC.name(), "5kB")).setSystemProperty(EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION, "0.001").build();
-        Plan smallBucketsPlan = distributedPlan(JOIN_THEN_SMALL_AGGREGATION, smallBuckets);
+        Session smallBuckets = Session.builder(session(AUTOMATIC.name(), "100kB")).setSystemProperty(EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION, "0.001").build();
+        Plan smallBucketsPlan = distributedPlan(JOIN_THEN_LARGE_AGGREGATION, smallBuckets);
         assertEquals(exchanges(smallBucketsPlan, REMOTE_MATERIALIZED).size(), materialized.size());
         assertEquals(exchanges(smallBucketsPlan, REMOTE_STREAMING).size(), streamed.size());
+    }
+
+    @Test
+    public void testCountsTheStagesThatStreamIntoEachOther()
+    {
+        // The join's and the aggregation's stages each fit 270 kB, both together do not. Streamed, they would run at
+        // the same time: the aggregation's input is materialized, so that the join runs first.
+        List<ExchangeNode> materialized = exchanges(distributedPlan(JOIN_THEN_LARGE_AGGREGATION, session(AUTOMATIC.name(), "270kB")), REMOTE_MATERIALIZED);
+        assertEquals(materialized.size(), 1);
+        assertFalse(searchFrom(materialized.get(0)).where(JoinNode.class::isInstance).findAll().isEmpty());
+        assertEquals(exchanges(distributedPlan(JOIN_THEN_LARGE_AGGREGATION, session(AUTOMATIC.name(), "280kB")), REMOTE_MATERIALIZED).size(), 0);
     }
 
     @Test

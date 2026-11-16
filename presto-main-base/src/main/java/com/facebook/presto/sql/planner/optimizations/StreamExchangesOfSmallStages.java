@@ -69,11 +69,14 @@ import static java.util.Objects.requireNonNull;
 /**
  * Materializes exchanges only into the stages that need it. With the AUTOMATIC exchange materialization strategy,
  * AddExchanges materializes the same exchanges as ALL. This optimizer then streams the materialized exchanges into
- * every stage whose estimated memory per worker is at most exchange_materialization_memory_threshold. A stage is the
- * part of the plan between remote exchanges. Its memory is the state of its operators: join and semi join build
+ * every stage whose estimated memory per worker, together with that of the stages streaming into it, is at most
+ * exchange_materialization_memory_threshold: stages connected by streamed exchanges run at the same time. A stage is
+ * the part of the plan between remote exchanges. Its memory is the state of its operators: join and semi join build
  * sides, grouped final aggregations (bounded by their input when their output has no estimate), and the inputs of
  * window, row number and mark distinct. The partitioned part is divided among the workers, the replicated part is
- * not. A stage without an estimate keeps its exchanges materialized. The exchanges streamed into a stage are also
+ * not. A stage whose exchanges stay materialized runs after the stages that write them, and holds the state of one
+ * bucket per worker at a time when it has a bucket count. A stage without an estimate keeps its exchanges
+ * materialized, and so do the stages it streams into. The exchanges streamed into a stage are also
  * partitioned as without materialization (system hash partitioning) when all of the stage's repartitioning inputs
  * stream and the stage neither reads nor writes a table, whose connector partitioning the stage could depend on.
  * Under the same conditions, a stage that stays materialized gets the fewest buckets (a power of two, at least one
@@ -147,8 +150,10 @@ public class StreamExchangesOfSmallStages
             this.maxBuckets = maxBuckets;
         }
 
-        // Decides for the stage rooted at stageRoot, then for the stages that feed it.
-        private void collectExchangesToStream(PlanNode stageRoot, Set<PlanNodeId> streamed, Set<PlanNodeId> systemPartitioned, Map<PlanNodeId, Integer> buckets)
+        // Decides for the stage rooted at stageRoot after the stages that feed it. Returns the stage's memory per worker
+        // while it runs: its state and that of the stages that stream into it, which run at the same time. A stage whose
+        // inputs stay materialized runs after the stages that write them, one bucket per worker at a time.
+        private double collectExchangesToStream(PlanNode stageRoot, Set<PlanNodeId> streamed, Set<PlanNodeId> systemPartitioned, Map<PlanNodeId, Integer> buckets)
         {
             List<ExchangeNode> inputs = new ArrayList<>();
             double partitionedBytes = 0;
@@ -171,20 +176,35 @@ public class StreamExchangesOfSmallStages
                 }
                 node.getSources().forEach(pending::push);
             }
+            double streamingInputBytes = 0;
+            double materializedInputBytes = 0;
+            for (ExchangeNode input : inputs) {
+                for (PlanNode source : input.getSources()) {
+                    double inputBytes = collectExchangesToStream(source, streamed, systemPartitioned, buckets);
+                    if (input.getScope() == REMOTE_MATERIALIZED) {
+                        materializedInputBytes += inputBytes;
+                    }
+                    else {
+                        streamingInputBytes += inputBytes;
+                    }
+                }
+            }
             List<ExchangeNode> repartitions = inputs.stream()
                     .filter(input -> input.getType() == REPARTITION)
                     .collect(toImmutableList());
             boolean repartitionable = !usesTable && !repartitions.isEmpty() && repartitions.stream().allMatch(input -> input.getScope() == REMOTE_MATERIALIZED);
+            double stageBytes = partitionedBytes / workers + replicatedBytes;
             // An unknown estimate is NaN, which fails the comparison.
-            if (partitionedBytes / workers + replicatedBytes <= threshold) {
+            if (stageBytes + streamingInputBytes + materializedInputBytes <= threshold) {
                 inputs.stream()
                         .filter(input -> input.getScope() == REMOTE_MATERIALIZED)
                         .forEach(input -> streamed.add(input.getId()));
                 if (repartitionable) {
                     repartitions.forEach(input -> systemPartitioned.add(input.getId()));
                 }
+                return stageBytes + streamingInputBytes + materializedInputBytes;
             }
-            else if (repartitionable && repartitions.stream().allMatch(input -> input.getPartitioningScheme().getPartitioning().getHandle().getConnectorId().isPresent())) {
+            if (repartitionable && repartitions.stream().allMatch(input -> input.getPartitioningScheme().getPartitioning().getHandle().getConnectorId().isPresent())) {
                 // One bucket per lifespan: a worker holds the partitioned state of one bucket at a time. Only a
                 // connector partitioning has a bucket count to choose.
                 double needed = Math.ceil(partitionedBytes / (bucketThreshold - replicatedBytes));
@@ -192,10 +212,11 @@ public class StreamExchangesOfSmallStages
                     int count = Math.max(workers, Integer.highestOneBit((int) Math.max(1, needed - 1)) << 1);
                     if (count < maxBuckets) {
                         repartitions.forEach(input -> buckets.put(input.getId(), count));
+                        return partitionedBytes / count + replicatedBytes + streamingInputBytes;
                     }
                 }
             }
-            inputs.forEach(input -> input.getSources().forEach(source -> collectExchangesToStream(source, streamed, systemPartitioned, buckets)));
+            return stageBytes + streamingInputBytes;
         }
 
         private double stateBytes(PlanNode node)
