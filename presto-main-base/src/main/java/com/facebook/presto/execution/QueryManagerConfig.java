@@ -58,6 +58,7 @@ public class QueryManagerConfig
     private boolean useStreamingExchangeForMarkDistinct;
     private DataSize exchangeMaterializationMemoryThreshold = new DataSize(1, GIGABYTE);
     private double exchangeMaterializationBucketMemoryFraction = 1.0;
+    private int exchangeMaterializationMaxBucketCount;
     private boolean enableWorkerIsolation;
     private Duration minQueryExpireAge = new Duration(15, TimeUnit.MINUTES);
     private int maxQueryHistory = 100;
@@ -265,6 +266,20 @@ public class QueryManagerConfig
     public QueryManagerConfig setExchangeMaterializationBucketMemoryFraction(double exchangeMaterializationBucketMemoryFraction)
     {
         this.exchangeMaterializationBucketMemoryFraction = exchangeMaterializationBucketMemoryFraction;
+        return this;
+    }
+
+    @Min(0)
+    public int getExchangeMaterializationMaxBucketCount()
+    {
+        return exchangeMaterializationMaxBucketCount;
+    }
+
+    @Config("query.exchange-materialization-max-bucket-count")
+    @ConfigDescription("With the AUTOMATIC exchange materialization strategy, the most buckets a stage whose exchanges are materialized may get; 0 means the hash partition count")
+    public QueryManagerConfig setExchangeMaterializationMaxBucketCount(int exchangeMaterializationMaxBucketCount)
+    {
+        this.exchangeMaterializationMaxBucketCount = exchangeMaterializationMaxBucketCount;
         return this;
     }
 

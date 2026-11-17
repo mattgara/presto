@@ -24,6 +24,7 @@ import org.testng.annotations.Test;
 import java.util.List;
 
 import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION;
+import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_MAX_BUCKET_COUNT;
 import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_MEMORY_THRESHOLD;
 import static com.facebook.presto.SystemSessionProperties.EXCHANGE_MATERIALIZATION_STRATEGY;
 import static com.facebook.presto.SystemSessionProperties.HASH_PARTITION_COUNT;
@@ -98,6 +99,21 @@ public class TestHiveAutomaticExchangeMaterialization
         // A stage that needs more buckets than the session allows gets that many.
         Session capped = Session.builder(automatic("1B")).setSystemProperty(HASH_PARTITION_COUNT, "16").build();
         materialized(plan(JOIN_THEN_AGGREGATION, capped)).forEach(exchange -> assertEquals(bucketCount(exchange), 16));
+    }
+
+    @Test
+    public void testMaxBucketCountAllowsMoreBucketsThanThePartitionCount()
+    {
+        // Streamed exchanges keep hash_partition_count partitions, while a materialized stage that needs more buckets
+        // gets up to exchange_materialization_max_bucket_count.
+        Session session = Session.builder(automatic("1B"))
+                .setSystemProperty(HASH_PARTITION_COUNT, "16")
+                .setSystemProperty(EXCHANGE_MATERIALIZATION_MAX_BUCKET_COUNT, "64")
+                .build();
+        List<ExchangeNode> materialized = materialized(plan(JOIN_THEN_AGGREGATION, session));
+        assertFalse(materialized.isEmpty());
+        materialized.forEach(exchange -> assertEquals(bucketCount(exchange), 64));
+        assertQuery(session, JOIN_THEN_AGGREGATION);
     }
 
     @Test

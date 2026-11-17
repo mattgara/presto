@@ -116,6 +116,7 @@ public final class SystemSessionProperties
     public static final String USE_STREAMING_EXCHANGE_FOR_MARK_DISTINCT = "use_stream_exchange_for_mark_distinct";
     public static final String EXCHANGE_MATERIALIZATION_MEMORY_THRESHOLD = "exchange_materialization_memory_threshold";
     public static final String EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION = "exchange_materialization_bucket_memory_fraction";
+    public static final String EXCHANGE_MATERIALIZATION_MAX_BUCKET_COUNT = "exchange_materialization_max_bucket_count";
     public static final String GROUPED_EXECUTION = "grouped_execution";
     public static final String RECOVERABLE_GROUPED_EXECUTION = "recoverable_grouped_execution";
     public static final String PARTITION_AWARE_GROUPED_EXECUTION = "partition_aware_grouped_execution";
@@ -590,6 +591,11 @@ public final class SystemSessionProperties
                             return fraction;
                         },
                         value -> value),
+                integerProperty(
+                        EXCHANGE_MATERIALIZATION_MAX_BUCKET_COUNT,
+                        "With the AUTOMATIC exchange materialization strategy, the most buckets a stage whose exchanges are materialized may get; 0 means hash_partition_count",
+                        queryManagerConfig.getExchangeMaterializationMaxBucketCount(),
+                        false),
                 booleanProperty(
                         USE_STREAMING_EXCHANGE_FOR_MARK_DISTINCT,
                         "Use streaming instead of materialization for mark distinct with materialized exchange enabled",
@@ -2706,6 +2712,11 @@ public final class SystemSessionProperties
     public static double getExchangeMaterializationBucketMemoryFraction(Session session)
     {
         return session.getSystemProperty(EXCHANGE_MATERIALIZATION_BUCKET_MEMORY_FRACTION, Double.class);
+    }
+
+    public static int getExchangeMaterializationMaxBucketCount(Session session)
+    {
+        return session.getSystemProperty(EXCHANGE_MATERIALIZATION_MAX_BUCKET_COUNT, Integer.class);
     }
 
     public static boolean isUseStreamingExchangeForMarkDistinctEnabled(Session session)

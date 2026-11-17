@@ -51,6 +51,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static com.facebook.presto.SystemSessionProperties.getExchangeMaterializationBucketMemoryFraction;
+import static com.facebook.presto.SystemSessionProperties.getExchangeMaterializationMaxBucketCount;
 import static com.facebook.presto.SystemSessionProperties.getExchangeMaterializationMemoryThreshold;
 import static com.facebook.presto.SystemSessionProperties.getExchangeMaterializationStrategy;
 import static com.facebook.presto.SystemSessionProperties.getHashPartitionCount;
@@ -117,12 +118,15 @@ public class StreamExchangesOfSmallStages
         if (!isEnabled(session, forceEnableOptimizer)) {
             return PlanOptimizerResult.optimizerResult(plan, false);
         }
+        int partitionCount = getHashPartitionCount(session);
+        int maxBuckets = getExchangeMaterializationMaxBucketCount(session);
         StageMemory stageMemory = new StageMemory(
                 new CachingStatsProvider(statsCalculator, session, types),
                 taskCountEstimator.estimateHashedTaskCount(session),
                 getExchangeMaterializationMemoryThreshold(session).toBytes(),
                 getExchangeMaterializationMemoryThreshold(session).toBytes() * getExchangeMaterializationBucketMemoryFraction(session),
-                getHashPartitionCount(session));
+                partitionCount,
+                maxBuckets > 0 ? maxBuckets : partitionCount);
         Set<PlanNodeId> streamed = new HashSet<>();
         Set<PlanNodeId> systemPartitioned = new HashSet<>();
         Map<PlanNodeId, Integer> buckets = new HashMap<>();
@@ -139,14 +143,16 @@ public class StreamExchangesOfSmallStages
         private final int workers;
         private final double threshold;
         private final double bucketThreshold;
+        private final int partitionCount;
         private final int maxBuckets;
 
-        private StageMemory(StatsProvider statsProvider, int workers, double threshold, double bucketThreshold, int maxBuckets)
+        private StageMemory(StatsProvider statsProvider, int workers, double threshold, double bucketThreshold, int partitionCount, int maxBuckets)
         {
             this.statsProvider = requireNonNull(statsProvider, "statsProvider is null");
             this.workers = workers;
             this.threshold = threshold;
             this.bucketThreshold = bucketThreshold;
+            this.partitionCount = partitionCount;
             this.maxBuckets = maxBuckets;
         }
 
@@ -206,14 +212,20 @@ public class StreamExchangesOfSmallStages
             }
             if (repartitionable && repartitions.stream().allMatch(input -> input.getPartitioningScheme().getPartitioning().getHandle().getConnectorId().isPresent())) {
                 // One bucket per lifespan: a worker holds the partitioned state of one bucket at a time. Only a
-                // connector partitioning has a bucket count to choose.
+                // connector partitioning has a bucket count to choose. A stage that needs maxBuckets or more gets
+                // maxBuckets, which differs from the materialized exchange's default (hash_partition_count) only when
+                // exchange_materialization_max_bucket_count is set.
                 double needed = Math.ceil(partitionedBytes / (bucketThreshold - replicatedBytes));
                 if (replicatedBytes < bucketThreshold && needed < maxBuckets) {
-                    int count = Math.max(workers, Integer.highestOneBit((int) Math.max(1, needed - 1)) << 1);
+                    int count = Math.min(maxBuckets, Math.max(workers, Integer.highestOneBit((int) Math.max(1, needed - 1)) << 1));
                     if (count < maxBuckets) {
                         repartitions.forEach(input -> buckets.put(input.getId(), count));
                         return partitionedBytes / count + replicatedBytes + streamingInputBytes;
                     }
+                }
+                // Buckets cannot shrink the replicated state; an unknown estimate (NaN) gets the most buckets.
+                if (maxBuckets != partitionCount && !(replicatedBytes >= bucketThreshold)) {
+                    repartitions.forEach(input -> buckets.put(input.getId(), maxBuckets));
                 }
             }
             return stageBytes + streamingInputBytes;
