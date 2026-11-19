@@ -27,6 +27,7 @@ import com.facebook.presto.spi.SchemaTableName;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.ListMultimap;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -64,6 +65,7 @@ import static com.facebook.presto.hive.HiveMetadata.shouldCreateFilesForMissingB
 import static com.facebook.presto.hive.HiveSessionProperties.getMaxInitialSplitSize;
 import static com.facebook.presto.hive.HiveSessionProperties.getMaxSplitSize;
 import static com.facebook.presto.hive.HiveSessionProperties.isFileSplittable;
+import static com.facebook.presto.hive.HiveSessionProperties.isStreamTemporaryTables;
 import static com.facebook.presto.hive.HiveSessionProperties.isOrderBasedExecutionEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isSkipEmptyFilesEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isSymlinkOptimizedReaderEnabled;
@@ -76,6 +78,8 @@ import static com.facebook.presto.hive.HiveUtil.getTargetPathsHiveFileInfos;
 import static com.facebook.presto.hive.HiveUtil.isHudiParquetInputFormat;
 import static com.facebook.presto.hive.HiveUtil.readSymlinkPaths;
 import static com.facebook.presto.hive.HiveUtil.shouldUseFileSplitsFromInputFormat;
+import static com.facebook.presto.hive.HiveWriterFactory.computeBucketedFileName;
+import static com.facebook.presto.hive.metastore.PrestoTableType.TEMPORARY_TABLE;
 import static com.facebook.presto.hive.HiveWriterFactory.getBucketNumber;
 import static com.facebook.presto.hive.NestedDirectoryPolicy.FAIL;
 import static com.facebook.presto.hive.NestedDirectoryPolicy.IGNORED;
@@ -100,6 +104,9 @@ public class StoragePartitionLoader
         extends PartitionLoader
 {
     private static final ListenableFuture<?> COMPLETED_FUTURE = immediateFuture(null);
+    // Directory of a streamed temporary table's splits before its location is committed: only the table's directory name and
+    // the file names matter to the worker that reads them.
+    private static final String STREAMED_TEMPORARY_TABLE_ROOT = "file:/presto-streamed-temporary-tables/";
 
     private final Table table;
     private final Map<Integer, Domain> infoColumnConstraints;
@@ -410,11 +417,14 @@ public class StoragePartitionLoader
                 .map(p -> p.getColumns().size())
                 .orElseGet(table.getDataColumns()::size);
         List<HivePartitionKey> partitionKeys = getPartitionKeys(table, partition.getPartition(), partitionName);
-        String location = getPartitionLocation(table, partition.getPartition());
-        if (location.isEmpty()) {
+        String committedLocation = getPartitionLocation(table, partition.getPartition());
+        if (committedLocation.isEmpty() && !isStreamedTemporaryTable()) {
             checkState(!shouldCreateFilesForMissingBuckets(table, session), "Empty location is only allowed for empty temporary table when zero-row file is not created");
             return COMPLETED_FUTURE;
         }
+        // A streamed temporary table is read while it is written, before its location is committed: its splits name the
+        // table's directory and bucket files (getBucketedSplits), which is how a GPU worker's exchange store finds them.
+        String location = committedLocation.isEmpty() ? STREAMED_TEMPORARY_TABLE_ROOT + table.getTableName() : committedLocation;
         Path path = new Path(location);
         Configuration configuration = hdfsEnvironment.getConfiguration(hdfsContext, path);
         // This is required for HUDI MOR realtime tables only.
@@ -538,6 +548,12 @@ public class StoragePartitionLoader
                 .iterator();
     }
 
+    // Whether this temporary table is read while it is written (HiveSessionProperties.STREAM_TEMPORARY_TABLES).
+    private boolean isStreamedTemporaryTable()
+    {
+        return table.getTableType().equals(TEMPORARY_TABLE) && isStreamTemporaryTables(session);
+    }
+
     private List<InternalHiveSplit> getBucketedSplits(
             Path path,
             ExtendedFileSystem fileSystem,
@@ -556,6 +572,26 @@ public class StoragePartitionLoader
 
         // list all files in the partition
         List<HiveFileInfo> fileInfos = new ArrayList<>(partitionBucketCount);
+        if (isStreamedTemporaryTable()) {
+            // One file per bucket, named as the writer names it (HiveWriterFactory.computeBucketedFileName): the section
+            // reading the table may start with the section writing it, before any file exists.
+            for (int bucket = 0; bucket < partitionBucketCount; bucket++) {
+                fileInfos.add(new HiveFileInfo(
+                        new Path(path, computeBucketedFileName(session.getQueryId(), bucket)).toString(),
+                        false,
+                        ImmutableList.of(),
+                        0,
+                        0,
+                        Optional.empty(),
+                        ImmutableMap.of()));
+            }
+            return convertFilesToInternalSplits(
+                    bucketSplitInfo,
+                    bucketConversion,
+                    computeBucketToFileInfoMapping(fileInfos, partitionBucketCount, partitionName),
+                    splitFactory,
+                    splittable);
+        }
         try {
             Iterators.addAll(fileInfos, directoryLister.list(fileSystem, table, path, partition, namenodeStats, new HiveDirectoryContext(
                     FAIL,
