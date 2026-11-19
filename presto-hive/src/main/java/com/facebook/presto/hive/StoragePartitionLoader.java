@@ -107,6 +107,9 @@ public class StoragePartitionLoader
     // Directory of a streamed temporary table's splits before its location is committed: only the table's directory name and
     // the file names matter to the worker that reads them.
     private static final String STREAMED_TEMPORARY_TABLE_ROOT = "file:/presto-streamed-temporary-tables/";
+    // Custom split info of a streamed temporary table's splits (kReadBucketCountSplitInfo in Velox's ExchangeStoreTables.h).
+    private static final String STREAMED_READ_BUCKET_COUNT = "read_bucket_count";
+    private static final String STREAMED_TABLE_BUCKET_COUNT = "table_bucket_count";
 
     private final Table table;
     private final Map<Integer, Domain> infoColumnConstraints;
@@ -573,6 +576,13 @@ public class StoragePartitionLoader
         // list all files in the partition
         List<HiveFileInfo> fileInfos = new ArrayList<>(partitionBucketCount);
         if (isStreamedTemporaryTable()) {
+            // A GPU worker reads a whole read bucket of a streamed table from the split of its first table bucket, while the
+            // table is written: each split names both bucket counts when a read bucket holds several table buckets.
+            Map<String, String> customSplitInfo = readBucketCount < partitionBucketCount ?
+                    ImmutableMap.of(
+                            STREAMED_READ_BUCKET_COUNT, String.valueOf(readBucketCount),
+                            STREAMED_TABLE_BUCKET_COUNT, String.valueOf(partitionBucketCount)) :
+                    ImmutableMap.of();
             // One file per bucket, named as the writer names it (HiveWriterFactory.computeBucketedFileName): the section
             // reading the table may start with the section writing it, before any file exists.
             for (int bucket = 0; bucket < partitionBucketCount; bucket++) {
@@ -583,7 +593,7 @@ public class StoragePartitionLoader
                         0,
                         0,
                         Optional.empty(),
-                        ImmutableMap.of()));
+                        customSplitInfo));
             }
             return convertFilesToInternalSplits(
                     bucketSplitInfo,
