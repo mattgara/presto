@@ -1300,6 +1300,24 @@ folly::Future<std::unique_ptr<Result>> TaskManager::getResults(
   }
 }
 
+namespace {
+
+// Records the completed driver groups of 'status', which a status long poll
+// returns, and returns whether any completed since the previous one it returned.
+bool reportCompletedDriverGroups(
+    PrestoTask& prestoTask,
+    const protocol::TaskStatus& status) {
+  std::lock_guard<std::mutex> l(prestoTask.mutex);
+  const bool newlyCompleted = status.completedDriverGroups.size() >
+      prestoTask.numCompletedDriverGroupsReported;
+  prestoTask.numCompletedDriverGroupsReported = std::max(
+      prestoTask.numCompletedDriverGroupsReported,
+      status.completedDriverGroups.size());
+  return newlyCompleted;
+}
+
+} // namespace
+
 folly::Future<std::unique_ptr<protocol::TaskStatus>> TaskManager::getTaskStatus(
     const TaskId& taskId,
     std::optional<protocol::TaskState> currentState,
@@ -1341,7 +1359,8 @@ folly::Future<std::unique_ptr<protocol::TaskStatus>> TaskManager::getTaskStatus(
     status = prestoTask->updateStatusLocked();
   }
 
-  if (currentState.value() != status.state || isFinalState(status.state)) {
+  if (currentState.value() != status.state || isFinalState(status.state) ||
+      reportCompletedDriverGroups(*prestoTask, status)) {
     promise.setValue(std::make_unique<protocol::TaskStatus>(status));
     return std::move(future).via(httpSrvCpuExecutor_);
   }
@@ -1353,16 +1372,19 @@ folly::Future<std::unique_ptr<protocol::TaskStatus>> TaskManager::getTaskStatus(
   prestoTask->task->stateChangeFuture(maxWaitMicros)
       .via(httpSrvCpuExecutor_)
       .thenValue([promiseHolder, prestoTask](auto&& /*done*/) {
+        auto status = prestoTask->updateStatus();
+        reportCompletedDriverGroups(*prestoTask, status);
         promiseHolder->promise.setValue(
-            std::make_unique<protocol::TaskStatus>(prestoTask->updateStatus()));
+            std::make_unique<protocol::TaskStatus>(std::move(status)));
       })
       .thenError(
           folly::tag_t<std::exception>{},
           [promiseHolder, prestoTask](std::exception const& /*e*/) {
             // We come here in the case of maxWait elapsed.
+            auto status = prestoTask->updateStatus();
+            reportCompletedDriverGroups(*prestoTask, status);
             promiseHolder->promise.setValue(
-                std::make_unique<protocol::TaskStatus>(
-                    prestoTask->updateStatus()));
+                std::make_unique<protocol::TaskStatus>(std::move(status)));
           });
   return std::move(future).via(httpSrvCpuExecutor_);
 }

@@ -147,6 +147,13 @@ struct PrestoTask {
   /// Pending status request. May arrive before there is a Task.
   PromiseHolderWeakPtr<std::unique_ptr<protocol::TaskStatus>> statusRequest;
 
+  /// The number of completed driver groups (lifespans) in the last status a
+  /// coordinator's long poll got (TaskManager::getTaskStatus()). A lifespan that
+  /// finishes between two polls, while the task stays RUNNING, makes the next
+  /// poll return at once: the task's state-change future has already fired for
+  /// it, and grouped execution schedules the next lifespan only on this status.
+  size_t numCompletedDriverGroupsReported{0};
+
   /// Info request. May arrive before there is a Task.
   PromiseHolderWeakPtr<std::unique_ptr<protocol::TaskInfo>> infoRequest;
 
