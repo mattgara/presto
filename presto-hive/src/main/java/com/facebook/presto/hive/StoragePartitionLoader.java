@@ -65,6 +65,7 @@ import static com.facebook.presto.hive.HiveMetadata.shouldCreateFilesForMissingB
 import static com.facebook.presto.hive.HiveSessionProperties.getMaxInitialSplitSize;
 import static com.facebook.presto.hive.HiveSessionProperties.getMaxSplitSize;
 import static com.facebook.presto.hive.HiveSessionProperties.isFileSplittable;
+import static com.facebook.presto.hive.HiveSessionProperties.isListTemporaryTablesByBucket;
 import static com.facebook.presto.hive.HiveSessionProperties.isStreamTemporaryTables;
 import static com.facebook.presto.hive.HiveSessionProperties.isOrderBasedExecutionEnabled;
 import static com.facebook.presto.hive.HiveSessionProperties.isSkipEmptyFilesEnabled;
@@ -554,7 +555,7 @@ public class StoragePartitionLoader
     // Whether this temporary table is read while it is written (HiveSessionProperties.STREAM_TEMPORARY_TABLES).
     private boolean isStreamedTemporaryTable()
     {
-        return table.getTableType().equals(TEMPORARY_TABLE) && isStreamTemporaryTables(session);
+        return table.getTableType().equals(TEMPORARY_TABLE) && (isStreamTemporaryTables(session) || isListTemporaryTablesByBucket(session));
     }
 
     private List<InternalHiveSplit> getBucketedSplits(

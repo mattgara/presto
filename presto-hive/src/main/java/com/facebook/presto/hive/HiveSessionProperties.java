@@ -99,6 +99,7 @@ public final class HiveSessionProperties
     public static final String MAX_BUCKETS_FOR_GROUPED_EXECUTION = "max_buckets_for_grouped_execution";
     public static final String READ_BUCKET_COUNT = "read_bucket_count";
     public static final String STREAM_TEMPORARY_TABLES = "stream_temporary_tables";
+    public static final String LIST_TEMPORARY_TABLES_BY_BUCKET = "list_temporary_tables_by_bucket";
     public static final String SCAN_CACHE_DEVICE_LIMIT_MB = "scan_cache_device_limit_mb";
     public static final String OFFLINE_DATA_DEBUG_MODE_ENABLED = "offline_data_debug_mode_enabled";
     public static final String FAIL_FAST_ON_INSERT_INTO_IMMUTABLE_PARTITIONS_ENABLED = "fail_fast_on_insert_into_immutable_partitions_enabled";
@@ -429,6 +430,13 @@ public final class HiveSessionProperties
                                 "(GPU workers that keep temporary tables in their exchange store)",
                         false,
                         false),
+                booleanProperty(
+                        LIST_TEMPORARY_TABLES_BY_BUCKET,
+                        "List a bucketed temporary table as one split per bucket, named as the writer names its file, instead of " +
+                                "listing its files, without starting the section that reads it early (GPU workers that keep temporary " +
+                                "tables in their exchange store then need no file per bucket)",
+                        false,
+                        false),
                 integerProperty(
                         READ_BUCKET_COUNT,
                         "Read a bucketed table as this many buckets, each the union of the table buckets with the same remainder, " +
@@ -731,6 +739,11 @@ public final class HiveSessionProperties
     public static boolean isStreamTemporaryTables(ConnectorSession session)
     {
         return session.getProperty(STREAM_TEMPORARY_TABLES, Boolean.class);
+    }
+
+    public static boolean isListTemporaryTablesByBucket(ConnectorSession session)
+    {
+        return session.getProperty(LIST_TEMPORARY_TABLES_BY_BUCKET, Boolean.class);
     }
 
     public static int getReadBucketCount(ConnectorSession session)
