@@ -314,7 +314,19 @@ public final class HiveBucketing
         }
 
         int bucketCount = hiveBucketProperty.get().getBucketCount();
-        return Optional.of(new HiveBucketHandle(bucketColumns.build(), bucketCount, bucketCount));
+        return Optional.of(new HiveBucketHandle(bucketColumns.build(), bucketCount, getReadBucketCount(session, bucketCount)));
+    }
+
+    // Grouped execution runs one lifespan per read bucket. A read bucket must be a union of whole table buckets with the
+    // same remainder, as when tables with mismatched bucket counts are joined (HiveMetadata.getCommonPartitioningHandle).
+    private static int getReadBucketCount(ConnectorSession session, int tableBucketCount)
+    {
+        int readBucketCount = HiveSessionProperties.getReadBucketCount(session);
+        if (readBucketCount <= 0 || readBucketCount >= tableBucketCount || tableBucketCount % readBucketCount != 0 ||
+                Integer.bitCount(tableBucketCount / readBucketCount) != 1) {
+            return tableBucketCount;
+        }
+        return readBucketCount;
     }
 
     public static Optional<HiveBucketFilter> getHiveBucketFilter(Table table, TupleDomain<ColumnHandle> effectivePredicate, boolean useLegacyTimestampBucketing)

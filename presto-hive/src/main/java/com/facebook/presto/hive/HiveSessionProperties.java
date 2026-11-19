@@ -97,6 +97,8 @@ public final class HiveSessionProperties
     public static final String VIRTUAL_BUCKET_COUNT = "virtual_bucket_count";
     public static final String CTE_VIRTUAL_BUCKET_COUNT = "cte_virtual_bucket_count";
     public static final String MAX_BUCKETS_FOR_GROUPED_EXECUTION = "max_buckets_for_grouped_execution";
+    public static final String READ_BUCKET_COUNT = "read_bucket_count";
+    public static final String SCAN_CACHE_DEVICE_LIMIT_MB = "scan_cache_device_limit_mb";
     public static final String OFFLINE_DATA_DEBUG_MODE_ENABLED = "offline_data_debug_mode_enabled";
     public static final String FAIL_FAST_ON_INSERT_INTO_IMMUTABLE_PARTITIONS_ENABLED = "fail_fast_on_insert_into_immutable_partitions_enabled";
     public static final String USE_LIST_DIRECTORY_CACHE = "use_list_directory_cache";
@@ -414,6 +416,18 @@ public final class HiveSessionProperties
                         hiveClientConfig.getCteVirtualBucketCount(),
                         false),
                 integerProperty(
+                        SCAN_CACHE_DEVICE_LIMIT_MB,
+                        "Device memory in MiB that a GPU worker's scan cache may hold while the query runs, leaving the rest " +
+                                "to the query's operators. 0 leaves the cache's own limit",
+                        0,
+                        false),
+                integerProperty(
+                        READ_BUCKET_COUNT,
+                        "Read a bucketed table as this many buckets, each the union of the table buckets with the same remainder, " +
+                                "when the table bucket count is this count times a power of two. 0 reads every table as its own bucket count",
+                        0,
+                        false),
+                integerProperty(
                         MAX_BUCKETS_FOR_GROUPED_EXECUTION,
                         "maximum total buckets to allow using grouped execution",
                         hiveClientConfig.getMaxBucketsForGroupedExecution(),
@@ -704,6 +718,11 @@ public final class HiveSessionProperties
     public static Integer getMinBucketCountToNotIgnoreTableBucketing(ConnectorSession session)
     {
         return session.getProperty(MIN_BUCKET_COUNT_TO_NOT_IGNORE_TABLE_BUCKETING, Integer.class);
+    }
+
+    public static int getReadBucketCount(ConnectorSession session)
+    {
+        return session.getProperty(READ_BUCKET_COUNT, Integer.class);
     }
 
     public static int getMaxBucketsForGroupedExecution(ConnectorSession session)
