@@ -26,7 +26,7 @@ import java.util.Properties;
 import static java.util.Objects.requireNonNull;
 
 /**
- * The samples of one schema: a directory holding {@code tables.properties} (written by {@code sample_tables.py}) and
+ * The samples of one schema: a directory holding {@code tables.properties} (written by the sample writer) and
  * one Parquet file per table, {@code <table>.parquet}.
  */
 public class SampleSet

@@ -43,7 +43,7 @@ public class SampleTable
     }
 
     /**
-     * Tables from properties written by {@code sample_tables.py}: {@code <table>.<field>=<value>}.
+     * Tables from properties written by the sample writer: {@code <table>.<field>=<value>}.
      */
     static Map<String, SampleTable> parse(Properties properties)
     {
