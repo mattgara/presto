@@ -79,7 +79,6 @@ import static com.facebook.airlift.concurrent.MoreFutures.whenAnyComplete;
 import static com.facebook.presto.SystemSessionProperties.getMaxConcurrentMaterializations;
 import static com.facebook.presto.SystemSessionProperties.getPartialResultsCompletionRatioThreshold;
 import static com.facebook.presto.SystemSessionProperties.getPartialResultsMaxExecutionTimeMultiplier;
-import static com.facebook.presto.SystemSessionProperties.isEnhancedCTESchedulingEnabled;
 import static com.facebook.presto.SystemSessionProperties.isPartialResultsEnabled;
 import static com.facebook.presto.SystemSessionProperties.isRuntimeOptimizerEnabled;
 import static com.facebook.presto.execution.BasicStageExecutionStats.aggregateBasicStageStats;
@@ -606,7 +605,7 @@ public class SqlQueryScheduler
                 // get all sections ready for execution
                 .filter(this::isReadyForExecution)
                 // for enhanced cte blocking we do not need a limit on the sections
-                .limit(isEnhancedCTESchedulingEnabled(session) ? Long.MAX_VALUE : maxConcurrentMaterializations - runningPlanSections)
+                .limit(StreamedTemporaryTables.startSectionsEarly(session) ? Long.MAX_VALUE : maxConcurrentMaterializations - runningPlanSections)
                 .map(this::tryCostBasedOptimize)
                 .collect(toImmutableList());
     }
@@ -820,7 +819,7 @@ public class SqlQueryScheduler
             // already scheduled
             return false;
         }
-        if (!isEnhancedCTESchedulingEnabled(session)) {
+        if (!StreamedTemporaryTables.startSectionsEarly(session)) {
             // Enhanced cte blocking is not enabled so block till child sections are complete
             for (StreamingPlanSection child : section.getChildren()) {
                 SqlStageExecution rootStageExecution = getStageExecution(child.getPlan().getFragment().getId());
