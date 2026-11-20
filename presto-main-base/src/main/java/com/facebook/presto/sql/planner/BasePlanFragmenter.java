@@ -384,11 +384,13 @@ public abstract class BasePlanFragmenter
         setDistributionForExchange(exchange.getType(), partitioningScheme, context);
 
         // Use ANY (e.g. UCX) for worker-to-worker exchanges, but fall back to
-        // HTTP when a child fragment runs on the coordinator (which only speaks HTTP).
+        // HTTP when a child fragment or the fragment that reads the exchange
+        // runs on the coordinator (which only speaks HTTP), such as the
+        // TableFinish of a table write.
         TransportType transportType = TransportType.HTTP;
         boolean anyChildOnCoordinator = exchange.getSources().stream()
                 .anyMatch(PlannerUtils::containsCoordinatorOnlyNode);
-        if (!anyChildOnCoordinator) {
+        if (!anyChildOnCoordinator && !context.get().hasCoordinatorOnlyDistribution()) {
             transportType = TransportType.ANY;
         }
         log.debug("[ANY_EXCHANGE] exchange=%s transport=%s partitioning=%s",
@@ -640,6 +642,11 @@ public abstract class BasePlanFragmenter
                     "Cannot set distribution to %s. Already set to %s",
                     distribution,
                     this.partitioningHandle));
+        }
+
+        public boolean hasCoordinatorOnlyDistribution()
+        {
+            return partitioningHandle.isPresent() && partitioningHandle.get().isCoordinatorOnly();
         }
 
         public FragmentProperties setCoordinatorOnlyDistribution(PlanNode node)
