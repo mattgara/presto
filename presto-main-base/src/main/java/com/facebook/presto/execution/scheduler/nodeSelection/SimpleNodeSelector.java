@@ -312,7 +312,9 @@ public class SimpleNodeSelector
     @Override
     public SplitPlacementResult computeAssignments(Set<Split> splits, List<RemoteTask> existingTasks, BucketNodeMap bucketNodeMap)
     {
-        checkArgument(!deterministicBoundedSplits, "Deterministic bounded placement does not support bucketed execution");
+        // Bucketed splits go to the node that owns their bucket (bucketNodeMap); the bounded ownership applies only to
+        // the dynamically placed scans, which a grouped query can also have (an unbucketed source stage before a
+        // materialized exchange).
         return selectDistributionNodes(nodeMap.get().get(), nodeTaskMap, maxSplitsWeightPerNode, maxPendingSplitsWeightPerTask, maxUnacknowledgedSplitsPerTask, splits, existingTasks, bucketNodeMap, nodeSelectionStats);
     }
 
